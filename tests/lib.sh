@@ -34,6 +34,15 @@ assert_contains() { # haystack needle label
   esac
 }
 
+assert_not_contains() { # haystack needle label
+  TESTS_RUN=$((TESTS_RUN + 1))
+  case "$1" in
+    *"$2"*) TESTS_FAILED=$((TESTS_FAILED + 1))
+       printf '  FAIL %s\n       [%s] contains [%s]\n' "$3" "$1" "$2" ;;
+    *) printf '  ok   %s\n' "$3" ;;
+  esac
+}
+
 finish() {
   printf '\n%s run, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
   [ "$TESTS_FAILED" -eq 0 ] || exit 1

@@ -332,8 +332,17 @@ cmd_sync() {
 cmd_install_remote() {
   host=${1:-}
   [ -n "$host" ] || tt_die "usage: tt install-remote HOST"
-  root=$(tt_self)/..
-  ${TT_RSYNC:-rsync} -a --delete "$root/" "$host:timetrack-plugin/" \
+  root=$(cd "$(tt_self)/.." && pwd) || tt_die "cannot locate the plugin root"
+  # Every path that travels is named here, so a directory added to this repo
+  # later reaches the edge machine only once someone adds it to this list, and
+  # an oversight leaves a file behind rather than sending one. rsync is not
+  # git-aware: .gitignore holds nothing back on its own.
+  set --
+  for part in bin lib skills hooks .claude-plugin .codex-plugin README.md; do
+    if [ -e "$root/$part" ]; then set -- "$@" "$root/$part"; fi
+  done
+  [ $# -gt 0 ] || tt_die "no plugin files found under $root"
+  ${TT_RSYNC:-rsync} -a --delete "$@" "$host:timetrack-plugin/" \
     || tt_die "could not reach $host"
   cat <<EOF
 copied the plugin to $host:timetrack-plugin
