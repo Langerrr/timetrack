@@ -183,4 +183,16 @@ assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 
 : > "$LOG"
 assert_status 0 'an empty log exits 0' -- sh -c "TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_LIB='$TT_LIB' sh '$TT' report"
 
+# The first instant of a local day, where a spring-forward can delete 00:00.
+SANTIAGO=$(TZ=America/Santiago sh "$TT" debug-epoch '2026-09-06 15:00')
+assert_eq "2026-09-06T01:00:00-0300" \
+  "$(TZ=America/Santiago sh "$TT" debug-iso "$(TZ=America/Santiago TT_NOW=$SANTIAGO sh "$TT" debug-midnight)")" \
+  'a day with no 00:00 starts at its first real instant'
+
+# %H of 09 and %M of 08 must not be read as octal.
+ZEROPAD=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 09:08')
+assert_eq "2026-09-02T00:00:00+0000" \
+  "$(TZ=UTC sh "$TT" debug-iso "$(TZ=UTC TT_NOW=$ZEROPAD sh "$TT" debug-midnight)")" \
+  'a leading-zero hour and minute are read as base ten'
+
 finish

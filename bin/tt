@@ -242,8 +242,23 @@ cmd_hook() {
   return 0
 }
 
-tt_midnight() { # epoch -> epoch of that local day at 00:00
-  tt_epoch "$(tt_fmt "$1" '%Y-%m-%d') 00:00"
+# The first instant of a local day. Nothing here parses a midnight, because a
+# spring-forward landing on 00:00 deletes it -- Santiago, Havana and Tehran all
+# do this, and the date has no local 00:00 to parse. Subtracting the wall-clock
+# time of day instead lands within one DST shift of the true start (exactly on
+# it when the day holds no transition), and the day boundary is walked to from
+# there. The walk terminates: the estimate is never later than the given epoch,
+# so it sits on the wanted day or on an earlier one.
+tt_midnight() { # epoch -> epoch of that local day's first instant
+  day=$(tt_fmt "$1" '%Y-%m-%d') || exit 1
+  hms=$(tt_fmt "$1" '%H %M %S') || exit 1
+  set -- "$1" $hms
+  # %H, %M and %S are zero-padded, and POSIX arithmetic reads a leading zero
+  # as octal, so 08 and 09 would be errors. Strip it.
+  e=$(( $1 - ${2#0} * 3600 - ${3#0} * 60 - ${4#0} ))
+  while [ "$(tt_fmt "$e" '%Y-%m-%d')" != "$day" ]; do e=$((e + 900)); done
+  while [ "$(tt_fmt "$((e - 900))" '%Y-%m-%d')" = "$day" ]; do e=$((e - 900)); done
+  printf '%s\n' "$e"
 }
 
 cmd_report() {
@@ -332,6 +347,7 @@ case "$sub" in
   debug-seconds) tt_seconds "$1" || exit 1 ;;
   debug-epoch)   tt_epoch "$1" ;;
   debug-iso)     tt_iso "$1" ;;
+  debug-midnight) tt_midnight "$(tt_now)" ;;
   debug-attribute) tt_attribute "$1" ;;
   debug-mode)    tt_mode "$1" ;;
   *)             printf 'tt: unknown subcommand: %s\n' "$sub" >&2; exit 2 ;;

@@ -50,7 +50,7 @@ END {
   for (i = 1; i <= nkeys; i++) if (length(keys[i]) > w) w = length(keys[i])
   fmt = "%-" w "s  %9s %9s %9s %9s\n"
 
-  printf fmt, (byday ? "DAY" : "PROJECT"), "PAIRED", "SOLO", "MANUAL", "TOTAL"
+  if (nkeys > 0) printf fmt, (byday ? "DAY" : "PROJECT"), "PAIRED", "SOLO", "MANUAL", "TOTAL"
   gp = 0; gs = 0; gm = 0
   for (i = 1; i <= nkeys; i++) {
     k = keys[i]
