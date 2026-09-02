@@ -1,0 +1,2 @@
+# Time logs never belong in the tool repository.
+*.tsv
