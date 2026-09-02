@@ -317,6 +317,53 @@ cmd_sessions() {
   done
 }
 
+cmd_sync() {
+  [ "${1:-}" = pull ] || tt_die "usage: tt sync pull HOST"
+  shift
+  host=${1:-}
+  [ -n "$host" ] || tt_die "usage: tt sync pull HOST"
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  # The whole file is replaced, so repeating a pull changes nothing.
+  ${TT_RSYNC:-rsync} -a "$host:.timetrack/events-$host.tsv" "$TT_HOME/events-$host.tsv" \
+    || tt_die "could not reach $host"
+  printf 'pulled events-%s.tsv\n' "$host"
+}
+
+cmd_install_remote() {
+  host=${1:-}
+  [ -n "$host" ] || tt_die "usage: tt install-remote HOST"
+  root=$(tt_self)/..
+  ${TT_RSYNC:-rsync} -a --delete "$root/" "$host:timetrack-plugin/" \
+    || tt_die "could not reach $host"
+  cat <<EOF
+copied the plugin to $host:timetrack-plugin
+
+On $host, register it and create the data directory:
+  claude: /plugin marketplace add ~/timetrack-plugin
+  codex:  codex plugin marketplace add ~/timetrack-plugin && codex plugin add timetrack
+  both:   ~/timetrack-plugin/bin/tt init
+
+Set machine=$host in ~/.timetrack/config on $host, so its log file is named
+events-$host.tsv and 'tt sync pull $host' finds it.
+
+$host keeps no credentials. Pull its log from a trusted machine with:
+  tt sync pull $host
+EOF
+}
+
+cmd_hooks_snippet() {
+  cmd='sh -c '"'"'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt" hook'"'"''
+  case "${1:-claude}" in
+    claude) printf 'Add to ~/.claude/settings.json under "hooks":\n\n' ;;
+    codex)  printf 'Add to ~/.codex/config.toml under [hooks], or ship hooks/hooks.json:\n\n' ;;
+    *)      tt_die "usage: tt hooks-snippet [claude|codex]" ;;
+  esac
+  for evt in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
+    printf '  %s -> %s\n' "$evt" "$cmd"
+  done
+  printf '\nWhen no plugin root is exported, replace it with the absolute path to bin/tt.\n'
+}
+
 cmd_help() {
   cat <<'USAGE'
 tt — per-project time tracking
@@ -345,6 +392,9 @@ case "$sub" in
   paired)        tt_set_mode paired "${1:-$PWD}" ;;
   sessions)      cmd_sessions ;;
   report)        cmd_report "$@" ;;
+  sync)          cmd_sync "$@" ;;
+  install-remote) cmd_install_remote "$@" ;;
+  hooks-snippet)  cmd_hooks_snippet "$@" ;;
   debug-home)    tt_home ;;
   debug-root)    tt_root ;;
   debug-now)     tt_now ;;

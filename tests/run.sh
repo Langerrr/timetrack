@@ -195,4 +195,26 @@ assert_eq "2026-09-02T00:00:00+0000" \
   "$(TZ=UTC sh "$TT" debug-iso "$(TZ=UTC TT_NOW=$ZEROPAD sh "$TT" debug-midnight)")" \
   'a leading-zero hour and minute are read as base ten'
 
+printf 'Task 8: remote transport\n'
+STUB="$SANDBOX/rsync-stub"
+cat > "$STUB" <<'STUBEOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$RSYNC_LOG"
+STUBEOF
+chmod +x "$STUB"
+RSYNC_LOG="$SANDBOX/rsync.log"; export RSYNC_LOG
+: > "$RSYNC_LOG"
+
+TT_RSYNC="$STUB" sh "$TT" sync pull macmini >/dev/null
+assert_contains "$(cat "$RSYNC_LOG")" "macmini:" 'sync pull reads from the host'
+assert_contains "$(cat "$RSYNC_LOG")" "events-macmini.tsv" 'sync pull names the host log file'
+
+: > "$RSYNC_LOG"
+TT_RSYNC="$STUB" sh "$TT" install-remote macmini >/dev/null
+assert_contains "$(cat "$RSYNC_LOG")" "macmini:" 'install-remote writes to the host'
+
+assert_status 1 'sync pull without a host is rejected' -- sh "$TT" sync pull
+assert_contains "$(sh "$TT" hooks-snippet claude)" "PreToolUse" 'claude snippet names the events'
+assert_contains "$(sh "$TT" hooks-snippet codex)" "PLUGIN_ROOT" 'codex snippet names the plugin root'
+
 finish
