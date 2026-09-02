@@ -128,7 +128,7 @@ cmd_hook() {
   mkdir -p "$TT_HOME" 2>/dev/null
   printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
-    "$proj" "$sub" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
+    "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
     >> "$(tt_log_file)" 2>/dev/null
   return 0
 }
