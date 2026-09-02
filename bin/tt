@@ -44,6 +44,11 @@ tt_epoch() { # 'YYYY-MM-DD HH:MM'
     || tt_die "cannot parse time: $1"
 }
 
+tt_fmt() { # epoch format
+  date -r "$1" +"$2" 2>/dev/null || date -d "@$1" +"$2" 2>/dev/null \
+    || tt_die "cannot format epoch $1"
+}
+
 tt_log_file() { printf '%s/events-%s.tsv\n' "$TT_HOME" "$(tt_machine)"; }
 
 # Absolute path without requiring realpath, which macOS lacks by default.
@@ -54,6 +59,17 @@ tt_abs() { # path
     /*) printf '%s\n' "$d" | sed 's://*:/:g; s:/$::' ;;
     *)  printf '%s\n' "$PWD/$d" | sed 's://*:/:g; s:/$::' ;;
   esac
+}
+
+# Resolves $0 through any symlinks without readlink -f, which macOS lacks.
+tt_self() {
+  s=$0
+  while [ -L "$s" ]; do
+    d=$(cd "$(dirname "$s")" && pwd)
+    l=$(readlink "$s")
+    case "$l" in /*) s=$l ;; *) s="$d/$l" ;; esac
+  done
+  (cd "$(dirname "$s")" && pwd)
 }
 
 tt_attribute() { # abs-path -> project<TAB>subpath
@@ -226,6 +242,45 @@ cmd_hook() {
   return 0
 }
 
+tt_midnight() { # epoch -> epoch of that local day at 00:00
+  tt_epoch "$(tt_fmt "$1" '%Y-%m-%d') 00:00"
+}
+
+cmd_report() {
+  now=$(tt_now)
+  since=''; upto=$now; byday=0; detail=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      today)    since=$(tt_midnight "$now") || exit 1; shift ;;
+      # Subtracting whole days can land on 23:00 or 01:00 across a DST change,
+      # so the result is put back through tt_midnight to reach that day's 00:00.
+      week)     mid=$(tt_midnight "$now") || exit 1
+                u=$(tt_fmt "$now" '%u') || exit 1
+                since=$(tt_midnight "$((mid - (u - 1) * 86400))") || exit 1
+                shift ;;
+      month)    ym=$(tt_fmt "$now" '%Y-%m') || exit 1
+                since=$(tt_epoch "$ym-01 00:00") || exit 1; shift ;;
+      --since)  [ $# -ge 2 ] || tt_die "--since needs a YYYY-MM-DD argument"
+                since=$(tt_epoch "$2 00:00") || exit 1; shift 2 ;;
+      --until)  [ $# -ge 2 ] || tt_die "--until needs a YYYY-MM-DD argument"
+                upto=$(tt_epoch "$2 23:59") || exit 1; shift 2 ;;
+      --by)     [ $# -ge 2 ] || tt_die "--by needs project or day"
+                [ "$2" = day ] && byday=1; shift 2 ;;
+      --detail) detail=1; shift ;;
+      *)        tt_die "unknown report option: $1" ;;
+    esac
+  done
+  [ -n "$since" ] || since=$(tt_midnight "$now") || exit 1
+
+  gap=$(tt_config TT_IDLE_GAP) || gap=''
+  [ -n "${gap:-}" ] || gap=$TT_IDLE_GAP
+  lib=${TT_LIB:-$(tt_self)/../lib}
+
+  cat "$TT_HOME"/events-*.tsv 2>/dev/null \
+    | awk -v since="$since" -v upto="$upto" -v gap="$gap" \
+          -v byday="$byday" -v detail="$detail" -f "$lib/report.awk"
+}
+
 cmd_init() {
   mkdir -p "$TT_HOME/mode" || tt_die "cannot create $TT_HOME"
   [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n' > "$TT_HOME/config"
@@ -269,12 +324,14 @@ case "$sub" in
   solo)          tt_set_mode solo "${1:-$PWD}" ;;
   paired)        tt_set_mode paired "${1:-$PWD}" ;;
   sessions)      cmd_sessions ;;
+  report)        cmd_report "$@" ;;
   debug-home)    tt_home ;;
   debug-root)    tt_root ;;
   debug-now)     tt_now ;;
   debug-machine) tt_machine ;;
   debug-seconds) tt_seconds "$1" || exit 1 ;;
   debug-epoch)   tt_epoch "$1" ;;
+  debug-iso)     tt_iso "$1" ;;
   debug-attribute) tt_attribute "$1" ;;
   debug-mode)    tt_mode "$1" ;;
   *)             printf 'tt: unknown subcommand: %s\n' "$sub" >&2; exit 2 ;;

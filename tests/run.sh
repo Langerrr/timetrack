@@ -115,4 +115,72 @@ assert_eq "$(( $(sh "$TT" debug-epoch '2026-09-01 14:00') + 7200 ))" "$(cut -f4 
 
 assert_contains "$(: > "$LOG"; TT_NOW=1900000000 sh "$TT" add sportx 30m)" "sportx" 'the written row is echoed'
 
+printf 'Task 5: reporting\n'
+TT_LIB="$REPO/lib"; export TT_LIB
+: > "$LOG"
+M=$(sh "$TT" debug-machine)
+beat() { # epoch mode project subpath session
+  printf '%s\tbeat\t%s\t%s\t%s\tclaude\t%s\t%s\t%s\t%s\t-\n' \
+    "$(sh "$TT" debug-iso "$1")" "$1" "$1" "$M" "$2" "$3" "$4" "$5" >> "$LOG"
+}
+
+# Consecutive beats inside the gap accumulate.
+beat 1900000000 paired sportx . s1
+beat 1900000060 paired sportx . s1
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 01m" 'a 60s gap is counted'
+
+# A gap wider than the threshold contributes nothing.
+: > "$LOG"
+beat 1900000000 paired sportx . s1
+beat 1900002000 paired sportx . s1
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 00m" 'a 2000s gap is dropped'
+
+# A mode change splits the run.
+: > "$LOG"
+beat 1900000000 paired sportx . s1
+beat 1900000060 paired sportx . s1
+beat 1900000120 solo   sportx . s1
+beat 1900000180 solo   sportx . s1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_contains "$OUT" "0h 02m" 'paired side of a split run'
+assert_contains "$OUT" "0h 01m" 'solo side of a split run'
+
+# Duplicate beats at one instant are harmless.
+: > "$LOG"
+beat 1900000000 paired sportx . s1
+beat 1900000000 paired sportx . s1
+beat 1900000060 paired sportx . s1
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 01m" 'duplicate timestamps add nothing'
+
+# Separate sessions never join across their boundary.
+: > "$LOG"
+beat 1900000000 paired sportx . s1
+beat 1900000060 paired sportx . s2
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 00m" 'distinct sessions do not join'
+
+# Spans land in the manual column.
+: > "$LOG"
+printf '%s\tspan\t1900000000\t1900003600\t%s\t-\tmanual\ttuurny\t.\t-\tcall\n' \
+  "$(sh "$TT" debug-iso 1900000000)" "$M" >> "$LOG"
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "1h 00m" 'a span contributes its full length'
+
+# Logs from several machines merge.
+: > "$LOG"
+OTHER="$TT_HOME/events-macmini.tsv"
+beat 1900000000 paired sportx . s1
+printf '%s\tbeat\t1900000000\t1900000000\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n%s\tbeat\t1900000300\t1900000300\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n' \
+  "$(sh "$TT" debug-iso 1900000000)" "$(sh "$TT" debug-iso 1900000300)" > "$OTHER"
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 05m" 'another machine merges in'
+rm -f "$OTHER"
+
+# --detail separates subpaths.
+: > "$LOG"
+beat 1900000000 paired sportx saas-backend s1
+beat 1900000060 paired sportx saas-backend s1
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01 --detail)" "sportx/saas-backend" '--detail shows the subpath'
+
+# An empty log reports cleanly.
+: > "$LOG"
+assert_status 0 'an empty log exits 0' -- sh -c "TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_LIB='$TT_LIB' sh '$TT' report"
+
 finish
