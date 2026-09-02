@@ -21,4 +21,22 @@ assert_eq "1900000000" "$(TT_NOW=1900000000 sh "$TT" debug-now)" 'TT_NOW overrid
 assert_eq "testbox" "$(printf 'machine=testbox\n' > "$TT_HOME/config"; sh "$TT" debug-machine)" 'machine from config'
 rm -f "$TT_HOME/config"
 
+printf 'Task 2: attribution and mode\n'
+assert_eq "sportx	." "$(sh "$TT" debug-attribute "$TT_ROOT/sportx")" 'project root gives subpath .'
+assert_eq "sportx	saas-backend" "$(sh "$TT" debug-attribute "$TT_ROOT/sportx/saas-backend")" 'nested gives subpath'
+assert_eq "~outside	/etc" "$(sh "$TT" debug-attribute /etc)" 'outside root books to ~outside'
+assert_eq "sportx	." "$(sh "$TT" debug-attribute "$TT_ROOT/sportx/")" 'trailing slash tolerated'
+assert_eq "~root	." "$(sh "$TT" debug-attribute "$TT_ROOT")" 'the workspace root itself books to ~root'
+
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'default mode is paired'
+sh "$TT" solo "$TT_ROOT/sportx" >/dev/null
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'solo is recorded'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/tuurny")" 'sibling directory is unaffected'
+sh "$TT" paired "$TT_ROOT/sportx" >/dev/null
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'paired is recorded'
+
+sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null
+assert_contains "$(sh "$TT" sessions)" "solo" 'sessions lists the mode'
+assert_contains "$(sh "$TT" sessions)" "$TT_ROOT/sportx/saas-backend" 'sessions lists the true path'
+
 finish

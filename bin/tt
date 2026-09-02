@@ -46,11 +46,65 @@ tt_epoch() { # 'YYYY-MM-DD HH:MM'
 
 tt_log_file() { printf '%s/events-%s.tsv\n' "$TT_HOME" "$(tt_machine)"; }
 
+# Absolute path without requiring realpath, which macOS lacks by default.
+tt_abs() { # path
+  d=$1
+  [ -d "$d" ] && { (cd "$d" 2>/dev/null && pwd) && return 0; }
+  case "$d" in
+    /*) printf '%s\n' "$d" | sed 's://*:/:g; s:/$::' ;;
+    *)  printf '%s\n' "$PWD/$d" | sed 's://*:/:g; s:/$::' ;;
+  esac
+}
+
+tt_attribute() { # abs-path -> project<TAB>subpath
+  p=$(tt_abs "$1")
+  r=$(tt_root)
+  if [ "$p" = "$r" ]; then printf '~root\t.\n'; return; fi
+  case "$p" in
+    "$r"/*)
+      rest=${p#"$r"/}
+      proj=${rest%%/*}
+      sub=${rest#"$proj"}
+      sub=${sub#/}
+      [ -n "$sub" ] || sub='.'
+      printf '%s\t%s\n' "$proj" "$sub" ;;
+    *) printf '~outside\t%s\n' "$p" ;;
+  esac
+}
+
+tt_mode_key() { # abs-path -> filename
+  printf '%s' "$1" | tr -c 'A-Za-z0-9.-' '_'
+}
+
+# The file name is a lossy encoding; the file body carries the exact path.
+tt_mode() { # abs-path -> paired|solo
+  f="$TT_HOME/mode/$(tt_mode_key "$(tt_abs "$1")")"
+  [ -f "$f" ] || { printf 'paired\n'; return; }
+  cut -f1 < "$f"
+}
+
+tt_set_mode() { # mode [path]
+  m=$1
+  p=$(tt_abs "${2:-$PWD}")
+  mkdir -p "$TT_HOME/mode" || tt_die "cannot create $TT_HOME/mode"
+  printf '%s\t%s\n' "$m" "$p" > "$TT_HOME/mode/$(tt_mode_key "$p")"
+  printf '%s: %s\n' "$m" "$p"
+}
+
 cmd_init() {
   mkdir -p "$TT_HOME/mode" || tt_die "cannot create $TT_HOME"
   [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n' > "$TT_HOME/config"
   f=$(tt_log_file); [ -f "$f" ] || : > "$f"
   printf 'initialised %s (machine: %s)\n' "$TT_HOME" "$(tt_machine)"
+}
+
+cmd_sessions() {
+  [ -d "$TT_HOME/mode" ] || return 0
+  for f in "$TT_HOME/mode"/*; do
+    [ -f "$f" ] || continue
+    m=$(cut -f1 < "$f"); p=$(cut -f2 < "$f")
+    printf '%-7s %s\n' "$m" "$p"
+  done
 }
 
 cmd_help() {
@@ -75,9 +129,14 @@ sub=${1:-help}
 case "$sub" in
   init)          cmd_init "$@" ;;
   help|-h|--help) cmd_help ;;
+  solo)          tt_set_mode solo "${1:-$PWD}" ;;
+  paired)        tt_set_mode paired "${1:-$PWD}" ;;
+  sessions)      cmd_sessions ;;
   debug-home)    tt_home ;;
   debug-root)    tt_root ;;
   debug-now)     tt_now ;;
   debug-machine) tt_machine ;;
+  debug-attribute) tt_attribute "$1" ;;
+  debug-mode)    tt_mode "$1" ;;
   *)             printf 'tt: unknown subcommand: %s\n' "$sub" >&2; exit 2 ;;
 esac
