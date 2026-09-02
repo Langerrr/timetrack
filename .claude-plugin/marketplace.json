@@ -1,0 +1,17 @@
+{
+  "name": "timetrack",
+  "owner": {
+    "name": "Langerrr"
+  },
+  "metadata": {
+    "description": "The timetrack plugin, installable straight from a clone of its own repository.",
+    "pluginRoot": "./"
+  },
+  "plugins": [
+    {
+      "name": "timetrack",
+      "source": "./",
+      "description": "Per-project time tracking across machines and agent harnesses, separating paired, solo and manual time."
+    }
+  ]
+}

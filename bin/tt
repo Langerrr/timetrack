@@ -396,9 +396,15 @@ EOF
 $host now has ~/timetrack-plugin and machine=$host in ~/.timetrack/config, so
 its log is events-$host.tsv and 'tt sync pull $host' finds it.
 
+The clone carries its own marketplace manifest, so it registers as the
+marketplace 'timetrack' holding the plugin 'timetrack'. Both harnesses want the
+plugin named with its marketplace; a bare name is refused.
+
 Register it on $host, in each harness you use there:
   claude: /plugin marketplace add ~/timetrack-plugin
-  codex:  codex plugin marketplace add ~/timetrack-plugin && codex plugin add timetrack
+          /plugin install timetrack@timetrack
+  codex:  codex plugin marketplace add ~/timetrack-plugin
+          codex plugin add timetrack@timetrack
 
 Codex skips a plugin's hooks until they are trusted, and says nothing when it
 does, so start one interactive session on $host and accept the hook prompt.
