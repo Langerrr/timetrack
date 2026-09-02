@@ -91,6 +91,48 @@ tt_set_mode() { # mode [path]
   printf '%s: %s\n' "$m" "$p"
 }
 
+# Extracts a JSON string field with POSIX sed. Good enough for hook payloads,
+# which are machine-generated and flat at the fields we read.
+tt_json_str() { # field json
+  printf '%s' "$2" \
+    | tr ',' '\n' \
+    | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -1
+}
+
+tt_clean() { # text
+  printf '%s' "$1" | tr '\t\n\r' '   ' | cut -c1-200
+}
+
+cmd_hook() {
+  input=$(cat 2>/dev/null) || input=''
+
+  cwd=$(tt_json_str cwd "$input")
+  [ -n "$cwd" ] || cwd=$PWD
+  sid=$(tt_json_str session_id "$input")
+  [ -n "$sid" ] || sid='-'
+  evt=$(tt_json_str hook_event_name "$input")
+  [ -n "$evt" ] || evt='-'
+
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || [ -n "${CLAUDECODE:-}" ]; then harness=claude
+  elif [ -n "${PLUGIN_ROOT:-}" ] || [ -n "${CODEX_HOME:-}" ]; then harness=codex
+  else harness='-'
+  fi
+
+  now=$(tt_now)
+  attrib=$(tt_attribute "$cwd")
+  proj=$(printf '%s' "$attrib" | cut -f1)
+  sub=$(printf '%s' "$attrib" | cut -f2)
+  mode=$(tt_mode "$cwd")
+
+  mkdir -p "$TT_HOME" 2>/dev/null
+  printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
+    "$proj" "$sub" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
+    >> "$(tt_log_file)" 2>/dev/null
+  return 0
+}
+
 cmd_init() {
   mkdir -p "$TT_HOME/mode" || tt_die "cannot create $TT_HOME"
   [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n' > "$TT_HOME/config"
@@ -128,6 +170,7 @@ sub=${1:-help}
 [ $# -gt 0 ] && shift
 case "$sub" in
   init)          cmd_init "$@" ;;
+  hook)          cmd_hook || true; exit 0 ;;
   help|-h|--help) cmd_help ;;
   solo)          tt_set_mode solo "${1:-$PWD}" ;;
   paired)        tt_set_mode paired "${1:-$PWD}" ;;
