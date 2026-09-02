@@ -7,7 +7,7 @@ TT="$REPO/bin/tt"
 . "$HERE/lib.sh"
 
 SANDBOX=${TMPDIR:-/tmp}/tt-test-$$
-mkdir -p "$SANDBOX/home" "$SANDBOX/root/sportx/saas-backend" "$SANDBOX/root/tuurny"
+mkdir -p "$SANDBOX/home" "$SANDBOX/root/sportx/saas-backend" "$SANDBOX/root/sportx/a,b" "$SANDBOX/root/tuurny"
 trap 'rm -rf "$SANDBOX"' EXIT INT TERM
 
 TT_HOME="$SANDBOX/home"
@@ -75,5 +75,20 @@ assert_eq "1" "$(wc -l < "$LOG" | tr -d ' ')" 'malformed input still records a b
 
 : > "$LOG"
 assert_status 0 'empty stdin still exits 0' -- sh -c "printf '' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' sh '$TT' hook"
+
+: > "$LOG"
+COMMAJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/a,b","hook_event_name":"PreToolUse"}'
+printf '%s' "$COMMAJSON" | TT_NOW=1900000003 sh "$TT" hook
+assert_eq "a,b" "$(cut -f9 < "$LOG")" 'a comma in cwd does not break attribution'
+
+: > "$LOG"
+DECOYJSON='{"tool_input":{"cwd":"/decoy","command":"ls"},"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse"}'
+printf '%s' "$DECOYJSON" | TT_NOW=1900000004 sh "$TT" hook
+assert_eq "saas-backend" "$(cut -f9 < "$LOG")" 'a cwd inside tool_input does not outrank the top-level cwd'
+
+: > "$LOG"
+ESCJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/a\"b","hook_event_name":"PreToolUse"}'
+printf '%s' "$ESCJSON" | TT_NOW=1900000005 sh "$TT" hook
+assert_eq 'a\"b' "$(cut -f9 < "$LOG")" 'an escaped quote in cwd does not truncate the value'
 
 finish
