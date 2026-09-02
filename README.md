@@ -58,7 +58,12 @@ you typed in is by definition time no hook was watching.
 /plugin install timetrack@langerrr
 ```
 
-Or from a clone of this repository, which carries its own marketplace manifest:
+Or from a clone of this repository, which carries its own marketplace manifest.
+The repository is public, so the clone needs no credentials:
+
+```sh
+git clone https://github.com/Langerrr/timetrack.git ~/timetrack-plugin
+```
 
 ```
 /plugin marketplace add ~/timetrack-plugin
@@ -87,9 +92,11 @@ Codex requires the marketplace in the plugin name. `codex plugin add timetrack`
 is refused with `plugin requires --marketplace unless passed as
 <plugin>@<marketplace>`.
 
-The decision is persisted, so you grant it once. `codex exec` has a
-`--dangerously-bypass-hook-trust` flag for vetted automation; it is not the
-normal path and should not be how you install this.
+Codex calls this *persisted* hook trust in its own `codex exec --help`, so the
+expectation is that you grant it once rather than every session — though the
+silent-skip behaviour is what was observed here, not the granting. That same
+help text carries a `--dangerously-bypass-hook-trust` flag for vetted automation;
+it is not the normal path and should not be how you install this.
 
 ### Put `tt` on your PATH
 
@@ -141,11 +148,11 @@ can fetch the tool itself over an anonymous `git clone`, and that is what
 tt install-remote macmini
 ```
 
-It **transfers no files**. Over SSH it makes the host clone (or fast-forward)
+It **transfers no files**. Over SSH it makes the host clone
 `https://github.com/Langerrr/timetrack.git` into `~/timetrack-plugin`, writes
 `machine=macmini` into the host's `~/.timetrack/config` so its log is named
 `events-macmini.tsv`, and runs `tt init` there. The only fact that travels from
-your machine is the name you log the host under. Run it again to update in place.
+your machine is the name you log the host under.
 
 It then prints the registration commands, which you run **on the host**, in each
 harness you use there. The clone carries its own marketplace manifest, so it
@@ -155,10 +162,22 @@ Codex, remember the trust step.
 Because the host clones the published repository, push anything you want it to
 have before running this.
 
-Both harnesses install a plugin by **copying** it into their own cache, so after
-an `install-remote` re-run pulls new code into `~/timetrack-plugin`, uninstall
-and reinstall the plugin on the host to pick it up. `plugin update` does nothing
-unless the version in `plugin.json` changed.
+When `~/timetrack-plugin/.git` already exists it fast-forwards that clone instead
+of making a new one, so re-running is meant to be how you update a host.
+
+**How far this has been taken.** The remote commands have only ever been driven
+against a stand-in `ssh`, `rsync` and `git`; no real host and no GitHub request
+at any point. Within that, the first-run clone path is the one that was
+rehearsed. The update path — `git pull --ff-only` against an existing clone — is
+implemented but has never been executed, because the stand-in `git` creates no
+`.git` directory and so the branch was never taken. Treat a re-run as expected
+behaviour rather than proven behaviour: after one, check on the host that the
+code actually moved.
+
+Whenever new code does reach `~/timetrack-plugin`, uninstall and reinstall the
+plugin on the host to pick it up. Both harnesses install a plugin by **copying**
+it into their own cache — that part was observed here — and `plugin update` does
+nothing unless the version in `plugin.json` changed.
 
 Bring its log back to a trusted machine, which is where committing and pushing
 happen:
@@ -167,8 +186,10 @@ happen:
 tt sync pull macmini
 ```
 
-That replaces `~/.timetrack/events-macmini.tsv` wholesale, so repeating a pull
-changes nothing. Nothing is ever pushed from the host.
+It runs `rsync -a`, which replaces `~/.timetrack/events-macmini.tsv` in full, so
+a repeated pull should change nothing. Nothing is ever pushed from the host —
+there is no code in `tt` that pushes. Like `install-remote`, this has only been
+exercised against a stand-in `rsync`.
 
 **Known limitation:** a host that cannot reach GitHub has no route in.
 `install-remote` provisions by cloning; an air-gapped or network-restricted
