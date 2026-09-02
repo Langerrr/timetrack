@@ -54,6 +54,7 @@ to where it started.
 
 - Session directory under `TT_ROOT` (default `~/workspace`): `project` is the
   first path segment, `subpath` is the remainder, or `.` at the project root.
+- Session directory at `TT_ROOT` itself: `project` is `~root` and `subpath` is `.`.
 - Session directory anywhere else: `project` is `~outside` and `subpath` is the
   absolute path.
 
