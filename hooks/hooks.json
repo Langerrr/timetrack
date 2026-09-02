@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ]
+  }
+}

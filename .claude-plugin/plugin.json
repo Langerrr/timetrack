@@ -1,0 +1,7 @@
+{
+  "name": "timetrack",
+  "version": "0.1.0",
+  "description": "Per-project time tracking across machines and agent harnesses, separating paired, solo and manual time.",
+  "author": { "name": "lan" },
+  "license": "MIT"
+}
