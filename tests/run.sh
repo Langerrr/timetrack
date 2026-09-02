@@ -196,9 +196,9 @@ assert_eq "2026-09-02T00:00:00+0000" \
   'a leading-zero hour and minute are read as base ten'
 
 printf 'Task 8: remote transport\n'
-# Two stubs, each recording what it was asked to do. install-remote must reach
-# the host through ssh alone: an empty rsync log is the assertion that no file
-# left this machine.
+# Three stubs: rsync and ssh record what they were asked to do, and a third ssh
+# fails with a chosen status. install-remote must reach the host through ssh
+# alone, so an empty rsync log is the assertion that no file left this machine.
 STUB="$SANDBOX/rsync-stub"
 cat > "$STUB" <<'STUBEOF'
 #!/bin/sh
@@ -207,28 +207,72 @@ STUBEOF
 SSHSTUB="$SANDBOX/ssh-stub"
 cat > "$SSHSTUB" <<'STUBEOF'
 #!/bin/sh
-printf 'host: %s\n' "$1" >> "$SSH_LOG"
+printf '%s\n' "$1" > "$SSH_HOST"
 shift
-printf 'cmd: %s\n' "$*" >> "$SSH_LOG"
+printf '%s\n' "$*" > "$SSH_CMD"
 STUBEOF
-chmod +x "$STUB" "$SSHSTUB"
-RSYNC_LOG="$SANDBOX/rsync.log"; SSH_LOG="$SANDBOX/ssh.log"
-export RSYNC_LOG SSH_LOG
-: > "$RSYNC_LOG"; : > "$SSH_LOG"
+SSHFAIL="$SANDBOX/ssh-fail"
+cat > "$SSHFAIL" <<'STUBEOF'
+#!/bin/sh
+exit "${SSH_EXIT:-1}"
+STUBEOF
+chmod +x "$STUB" "$SSHSTUB" "$SSHFAIL"
+RSYNC_LOG="$SANDBOX/rsync.log"
+SSH_HOST="$SANDBOX/ssh.host"
+SSH_CMD="$SANDBOX/ssh.cmd"
+export RSYNC_LOG SSH_HOST SSH_CMD
+reset_logs() { : > "$RSYNC_LOG"; : > "$SSH_HOST"; : > "$SSH_CMD"; }
+reset_logs
 
 TT_RSYNC="$STUB" sh "$TT" sync pull macmini >/dev/null
 assert_contains "$(cat "$RSYNC_LOG")" "macmini:" 'sync pull reads from the host'
 assert_contains "$(cat "$RSYNC_LOG")" "events-macmini.tsv" 'sync pull names the host log file'
-assert_eq "" "$(cat "$SSH_LOG")" 'sync pull drives rsync, not a remote command'
+assert_eq "" "$(cat "$SSH_CMD")" 'sync pull drives rsync, not a remote command'
 
-: > "$RSYNC_LOG"; : > "$SSH_LOG"
+reset_logs
 TT_SSH="$SSHSTUB" TT_RSYNC="$STUB" sh "$TT" install-remote macmini >/dev/null
-RAN=$(cat "$SSH_LOG")
-assert_contains "$RAN" "host: macmini" 'install-remote runs on the named host'
-assert_contains "$RAN" "https://github.com/Langerrr/timetrack.git" 'install-remote clones the public repository'
-assert_contains "$RAN" "machine=macmini" 'install-remote names the machine in its config'
+assert_eq "macmini" "$(cat "$SSH_HOST")" 'install-remote runs on the named host'
+assert_contains "$(cat "$SSH_CMD")" "https://github.com/Langerrr/timetrack.git" 'install-remote clones the public repository'
+assert_contains "$(cat "$SSH_CMD")" "machine=macmini" 'install-remote names the machine in its config'
 assert_eq "" "$(cat "$RSYNC_LOG")" 'install-remote transfers no files'
 
+# The script install-remote builds is run here, against a throwaway HOME and a
+# stand-in git, so what it does to a config is tested without an ssh hop, a
+# clone, or any host at all.
+RHOME="$SANDBOX/remote"
+mkdir -p "$RHOME/.timetrack" "$SANDBOX/fakebin"
+cat > "$SANDBOX/fakebin/git" <<'GITEOF'
+#!/bin/sh
+case "$1" in
+  clone) mkdir -p "$3/bin"; printf '#!/bin/sh\nexit 0\n' > "$3/bin/tt"; chmod +x "$3/bin/tt" ;;
+esac
+exit 0
+GITEOF
+chmod +x "$SANDBOX/fakebin/git"
+run_remote() { HOME="$RHOME" PATH="$SANDBOX/fakebin:$PATH" sh "$SSH_CMD"; }
+
+# A hand-edited config whose last line never got its newline.
+printf '# TT_ROOT=\nTT_IDLE_GAP=600' > "$RHOME/.timetrack/config"
+run_remote
+assert_contains "$(cat "$RHOME/.timetrack/config")" "TT_IDLE_GAP=600
+machine=macmini" 'a config with no trailing newline keeps its last key on its own line'
+assert_eq "macmini" "$(TT_HOME="$RHOME/.timetrack" sh "$TT" debug-machine)" 'the machine name is readable afterwards'
+
+# An existing machine= line is replaced where it stands.
+printf 'machine=stale\nTT_IDLE_GAP=600\n' > "$RHOME/.timetrack/config"
+run_remote
+assert_eq "1" "$(grep -c '^machine=' "$RHOME/.timetrack/config")" 'one machine line, not two'
+assert_eq "macmini" "$(TT_HOME="$RHOME/.timetrack" sh "$TT" debug-machine)" 'a stale machine name is replaced'
+assert_contains "$(cat "$RHOME/.timetrack/config")" "TT_IDLE_GAP=600" 'the other keys survive the replacement'
+
+# ssh reports its own failures as 255; anything else came from the far side.
+assert_contains "$(SSH_EXIT=255 TT_SSH="$SSHFAIL" sh "$TT" install-remote macmini 2>&1)" \
+  "could not reach macmini" 'a connection failure blames the connection'
+assert_contains "$(SSH_EXIT=1 TT_SSH="$SSHFAIL" sh "$TT" install-remote macmini 2>&1)" \
+  "reached macmini" 'a failure on the far side says the host was reached'
+
+assert_status 1 'install-remote refuses a host name that is not one' -- sh -c "TT_SSH='$SSHSTUB' sh '$TT' install-remote 'macmini;id'"
+assert_status 1 'sync pull refuses a host name that is not one' -- sh -c "TT_RSYNC='$STUB' sh '$TT' sync pull 'mac mini'"
 assert_status 1 'sync pull without a host is rejected' -- sh "$TT" sync pull
 assert_status 1 'install-remote without a host is rejected' -- sh "$TT" install-remote
 assert_contains "$(sh "$TT" hooks-snippet claude)" "PreToolUse" 'claude snippet names the events'

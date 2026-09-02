@@ -317,25 +317,56 @@ cmd_sessions() {
   done
 }
 
+# Both remote commands hand this string to a shell running on the far side --
+# rsync expands a remote path there, and install-remote runs a script there --
+# so a host name is held to what a host name is made of. Refusing an odd one is
+# shorter than quoting it correctly through two shells, and a leading hyphen
+# would otherwise be read by ssh as an option rather than a destination.
+tt_host_ok() { # [user@]host
+  case "$1" in
+    ''|-*|@*|*@|*@*@*)  return 1 ;;
+    *[!A-Za-z0-9._@-]*) return 1 ;;
+  esac
+  return 0
+}
+
+tt_bad_host() { # host
+  tt_die "not a usable host name: $1 (expected [user@]host of letters, digits, dots, hyphens and underscores)"
+}
+
 cmd_sync() {
   [ "${1:-}" = pull ] || tt_die "usage: tt sync pull HOST"
   shift
   host=${1:-}
   [ -n "$host" ] || tt_die "usage: tt sync pull HOST"
+  tt_host_ok "$host" || tt_bad_host "$host"
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
   # The whole file is replaced, so repeating a pull changes nothing.
-  ${TT_RSYNC:-rsync} -a "$host:.timetrack/events-$host.tsv" "$TT_HOME/events-$host.tsv" \
-    || tt_die "could not reach $host"
+  ${TT_RSYNC:-rsync} -a "$host:.timetrack/events-$host.tsv" "$TT_HOME/events-$host.tsv"
+  st=$?
+  # ssh reports its own failures as 255 and rsync passes that through, so a
+  # connection problem and a problem at the other end are told apart here
+  # rather than both being reported as an unreachable host.
+  case $st in
+    0)   ;;
+    255) tt_die "could not reach $host" ;;
+    *)   tt_die "reached $host, but events-$host.tsv did not copy (rsync exit $st); check that ~/.timetrack/config on $host says machine=$host" ;;
+  esac
   printf 'pulled events-%s.tsv\n' "$host"
 }
 
 cmd_install_remote() {
   host=${1:-}
   [ -n "$host" ] || tt_die "usage: tt install-remote HOST"
+  tt_host_ok "$host" || tt_bad_host "$host"
   # The remote fetches the tool itself: the repository is public, so its clone is
   # anonymous and touches no account, and the only fact that travels from here
   # is the name this machine is logged under. The same command provisions a new
   # host and updates one already installed.
+  #
+  # The config is rewritten whole by awk rather than patched by sed, so a file
+  # whose last line was hand-edited without a trailing newline gains one instead
+  # of having the next key run onto the end of it.
   remote=$(cat <<EOF
 set -e
 d=\$HOME/timetrack-plugin
@@ -345,15 +376,21 @@ fi
 mkdir -p "\$HOME/.timetrack"
 c=\$HOME/.timetrack/config
 [ -f "\$c" ] || : > "\$c"
-if grep -q '^machine=' "\$c"; then
-  sed 's/^machine=.*/machine=$host/' "\$c" > "\$c.new" && mv "\$c.new" "\$c"
-else
-  printf 'machine=$host\n' >> "\$c"
-fi
+awk -v m='machine=$host' '
+  /^machine=/ { print m; seen = 1; next }
+  { print }
+  END { if (!seen) print m }
+' "\$c" > "\$c.new" && mv "\$c.new" "\$c"
 sh "\$d/bin/tt" init
 EOF
 )
-  ${TT_SSH:-ssh} "$host" "$remote" || tt_die "could not reach $host"
+  ${TT_SSH:-ssh} "$host" "$remote"
+  st=$?
+  case $st in
+    0)   ;;
+    255) tt_die "could not reach $host" ;;
+    *)   tt_die "reached $host, but the setup did not finish (exit $st); check that git on $host can clone from github.com" ;;
+  esac
   cat <<EOF
 
 $host now has ~/timetrack-plugin and machine=$host in ~/.timetrack/config, so
