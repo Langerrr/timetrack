@@ -225,8 +225,10 @@ cmd_hook() {
 
   # Codex sets CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA next to its own
   # PLUGIN_ROOT and PLUGIN_DATA, so a hook it runs answers to both names.
-  # Only Codex sets the unprefixed pair, so those are read first.
-  if [ -n "${PLUGIN_ROOT:-}" ] || [ -n "${CODEX_HOME:-}" ]; then harness=codex
+  # Only Codex sets the unprefixed pair, so that is read first. CODEX_HOME is
+  # not consulted: a user may export it from a login shell, and a hook inherits
+  # the login environment, which would book every Claude beat as Codex.
+  if [ -n "${PLUGIN_ROOT:-}" ]; then harness=codex
   elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || [ -n "${CLAUDECODE:-}" ]; then harness=claude
   else harness='-'
   fi
