@@ -91,4 +91,28 @@ ESCJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/a\"b","hook_event_nam
 printf '%s' "$ESCJSON" | TT_NOW=1900000005 sh "$TT" hook
 assert_eq 'a\"b' "$(cut -f9 < "$LOG")" 'an escaped quote in cwd does not truncate the value'
 
+printf 'Task 4: manual entries\n'
+assert_eq "5400" "$(sh "$TT" debug-seconds 90m)" '90m parses'
+assert_eq "5400" "$(sh "$TT" debug-seconds 1.5h)" '1.5h parses'
+assert_eq "9000" "$(sh "$TT" debug-seconds 2h30m)" '2h30m parses'
+assert_eq "2700" "$(sh "$TT" debug-seconds 45)" 'bare number is minutes'
+assert_status 1 'garbage duration is rejected' -- sh "$TT" debug-seconds banana
+
+: > "$LOG"
+TT_NOW=1900000000 sh "$TT" add sportx 90m "architecture call" >/dev/null
+assert_eq "span" "$(cut -f2 < "$LOG")" 'kind is span'
+assert_eq "1899994600" "$(cut -f3 < "$LOG")" 'span starts one duration before now'
+assert_eq "1900000000" "$(cut -f4 < "$LOG")" 'span ends now'
+assert_eq "manual" "$(cut -f7 < "$LOG")" 'mode is manual'
+assert_eq "sportx" "$(cut -f8 < "$LOG")" 'project recorded'
+assert_eq "architecture call" "$(cut -f11 < "$LOG")" 'note recorded'
+assert_eq "-" "$(cut -f10 < "$LOG")" 'no session id for a span'
+
+: > "$LOG"
+sh "$TT" add tuurny 2h --at '2026-09-01 14:00' >/dev/null
+assert_eq "$(sh "$TT" debug-epoch '2026-09-01 14:00')" "$(cut -f3 < "$LOG")" '--at sets the start'
+assert_eq "$(( $(sh "$TT" debug-epoch '2026-09-01 14:00') + 7200 ))" "$(cut -f4 < "$LOG")" '--at plus duration sets the end'
+
+assert_contains "$(: > "$LOG"; TT_NOW=1900000000 sh "$TT" add sportx 30m)" "sportx" 'the written row is echoed'
+
 finish

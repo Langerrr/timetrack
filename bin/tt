@@ -148,6 +148,55 @@ tt_clean() { # text
   printf '%s' "$1" | tr '\t\n\r' '   ' | cut -c1-200
 }
 
+# Accepts 90m, 1.5h, 2h30m, or a bare number read as minutes.
+tt_seconds() { # duration
+  printf '%s' "$1" | awk '
+    {
+      s = tolower($0)
+      if (s ~ /^[0-9]+(\.[0-9]+)?$/) { printf "%d\n", s * 60; exit 0 }
+      total = 0; matched = 0
+      while (match(s, /^[0-9]+(\.[0-9]+)?[hm]/)) {
+        piece = substr(s, 1, RLENGTH)
+        unit  = substr(piece, RLENGTH, 1)
+        value = substr(piece, 1, RLENGTH - 1) + 0
+        total += (unit == "h") ? value * 3600 : value * 60
+        s = substr(s, RLENGTH + 1)
+        matched = 1
+      }
+      if (matched && s == "") { printf "%d\n", total; exit 0 }
+      exit 1
+    }'
+}
+
+cmd_add() {
+  [ $# -ge 2 ] || tt_die "usage: tt add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']"
+  proj=$1; dur=$2; shift 2
+  note='-'; at=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --at) [ $# -ge 2 ] || tt_die "--at needs a 'YYYY-MM-DD HH:MM' argument"; at=$2; shift 2 ;;
+      *)    note=$1; shift ;;
+    esac
+  done
+
+  # An unparseable duration leaves awk silent, whatever it exits with.
+  secs=$(tt_seconds "$dur")
+  case "$secs" in
+    ''|*[!0-9]*) tt_die "cannot parse duration: $dur" ;;
+  esac
+
+  if [ -n "$at" ]; then start=$(tt_epoch "$at") || exit 1; end=$((start + secs))
+  else end=$(tt_now); start=$((end - secs))
+  fi
+
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  row=$(printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\t%s\t.\t-\t%s' \
+    "$(tt_iso "$start")" "$start" "$end" "$(tt_machine)" \
+    "$(tt_clean "$proj")" "$(tt_clean "$note")")
+  printf '%s\n' "$row" >> "$(tt_log_file)"
+  printf '%s\n' "$row"
+}
+
 cmd_hook() {
   input=$(cat 2>/dev/null) || input=''
 
@@ -215,6 +264,7 @@ sub=${1:-help}
 case "$sub" in
   init)          cmd_init "$@" ;;
   hook)          cmd_hook || true; exit 0 ;;
+  add)           cmd_add "$@" ;;
   help|-h|--help) cmd_help ;;
   solo)          tt_set_mode solo "${1:-$PWD}" ;;
   paired)        tt_set_mode paired "${1:-$PWD}" ;;
@@ -223,6 +273,8 @@ case "$sub" in
   debug-root)    tt_root ;;
   debug-now)     tt_now ;;
   debug-machine) tt_machine ;;
+  debug-seconds) tt_seconds "$1" || exit 1 ;;
+  debug-epoch)   tt_epoch "$1" ;;
   debug-attribute) tt_attribute "$1" ;;
   debug-mode)    tt_mode "$1" ;;
   *)             printf 'tt: unknown subcommand: %s\n' "$sub" >&2; exit 2 ;;
