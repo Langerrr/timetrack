@@ -332,30 +332,45 @@ cmd_sync() {
 cmd_install_remote() {
   host=${1:-}
   [ -n "$host" ] || tt_die "usage: tt install-remote HOST"
-  root=$(cd "$(tt_self)/.." && pwd) || tt_die "cannot locate the plugin root"
-  # Every path that travels is named here, so a directory added to this repo
-  # later reaches the edge machine only once someone adds it to this list, and
-  # an oversight leaves a file behind rather than sending one. rsync is not
-  # git-aware: .gitignore holds nothing back on its own.
-  set --
-  for part in bin lib skills hooks .claude-plugin .codex-plugin README.md; do
-    if [ -e "$root/$part" ]; then set -- "$@" "$root/$part"; fi
-  done
-  [ $# -gt 0 ] || tt_die "no plugin files found under $root"
-  ${TT_RSYNC:-rsync} -a --delete "$@" "$host:timetrack-plugin/" \
-    || tt_die "could not reach $host"
+  # The remote fetches the tool itself: the repository is public, so its clone is
+  # anonymous and touches no account, and the only fact that travels from here
+  # is the name this machine is logged under. The same command provisions a new
+  # host and updates one already installed.
+  remote=$(cat <<EOF
+set -e
+d=\$HOME/timetrack-plugin
+if [ -d "\$d/.git" ]; then git -C "\$d" pull --ff-only
+else git clone https://github.com/Langerrr/timetrack.git "\$d"
+fi
+mkdir -p "\$HOME/.timetrack"
+c=\$HOME/.timetrack/config
+[ -f "\$c" ] || : > "\$c"
+if grep -q '^machine=' "\$c"; then
+  sed 's/^machine=.*/machine=$host/' "\$c" > "\$c.new" && mv "\$c.new" "\$c"
+else
+  printf 'machine=$host\n' >> "\$c"
+fi
+sh "\$d/bin/tt" init
+EOF
+)
+  ${TT_SSH:-ssh} "$host" "$remote" || tt_die "could not reach $host"
   cat <<EOF
-copied the plugin to $host:timetrack-plugin
 
-On $host, register it and create the data directory:
+$host now has ~/timetrack-plugin and machine=$host in ~/.timetrack/config, so
+its log is events-$host.tsv and 'tt sync pull $host' finds it.
+
+Register it on $host, in each harness you use there:
   claude: /plugin marketplace add ~/timetrack-plugin
   codex:  codex plugin marketplace add ~/timetrack-plugin && codex plugin add timetrack
-  both:   ~/timetrack-plugin/bin/tt init
 
-Set machine=$host in ~/.timetrack/config on $host, so its log file is named
-events-$host.tsv and 'tt sync pull $host' finds it.
+Codex skips a plugin's hooks until they are trusted, and says nothing when it
+does, so start one interactive session on $host and accept the hook prompt.
 
-$host keeps no credentials. Pull its log from a trusted machine with:
+$host clones the published repository, so push anything you want it to have
+before running this. Running it again pulls in place.
+
+$host keeps no credentials: the clone is anonymous and nothing is pushed from
+it. Pull its log from a trusted machine with:
   tt sync pull $host
 EOF
 }
@@ -385,7 +400,7 @@ tt — per-project time tracking
   tt sessions                      list known session directories and modes
   tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
   tt sync pull HOST                fetch HOST's log into this machine's repo
-  tt install-remote HOST           copy this plugin to HOST and register it
+  tt install-remote HOST           clone this tool onto HOST over SSH and name it
   tt hooks-snippet [claude|codex]  print hook configuration
 USAGE
 }

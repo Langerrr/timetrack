@@ -196,48 +196,41 @@ assert_eq "2026-09-02T00:00:00+0000" \
   'a leading-zero hour and minute are read as base ten'
 
 printf 'Task 8: remote transport\n'
-# The stub records the argument list, and then the top-level names rsync would
-# actually carry -- a trailing slash sends a directory's contents, so what
-# travels cannot be read off the argument list alone.
+# Two stubs, each recording what it was asked to do. install-remote must reach
+# the host through ssh alone: an empty rsync log is the assertion that no file
+# left this machine.
 STUB="$SANDBOX/rsync-stub"
 cat > "$STUB" <<'STUBEOF'
 #!/bin/sh
-printf 'argv: %s\n' "$*" >> "$RSYNC_LOG"
-for a in "$@"; do
-  case "$a" in
-    -*|*:*) continue ;;
-    */) for e in "$a".* "$a"*; do
-          [ -e "$e" ] || continue
-          b=${e##*/}
-          case "$b" in .|..) continue ;; esac
-          printf 'carries: %s\n' "$b" >> "$RSYNC_LOG"
-        done ;;
-    *)  printf 'carries: %s\n' "${a##*/}" >> "$RSYNC_LOG" ;;
-  esac
-done
+printf '%s\n' "$*" >> "$RSYNC_LOG"
 STUBEOF
-chmod +x "$STUB"
-RSYNC_LOG="$SANDBOX/rsync.log"; export RSYNC_LOG
-: > "$RSYNC_LOG"
+SSHSTUB="$SANDBOX/ssh-stub"
+cat > "$SSHSTUB" <<'STUBEOF'
+#!/bin/sh
+printf 'host: %s\n' "$1" >> "$SSH_LOG"
+shift
+printf 'cmd: %s\n' "$*" >> "$SSH_LOG"
+STUBEOF
+chmod +x "$STUB" "$SSHSTUB"
+RSYNC_LOG="$SANDBOX/rsync.log"; SSH_LOG="$SANDBOX/ssh.log"
+export RSYNC_LOG SSH_LOG
+: > "$RSYNC_LOG"; : > "$SSH_LOG"
 
 TT_RSYNC="$STUB" sh "$TT" sync pull macmini >/dev/null
 assert_contains "$(cat "$RSYNC_LOG")" "macmini:" 'sync pull reads from the host'
 assert_contains "$(cat "$RSYNC_LOG")" "events-macmini.tsv" 'sync pull names the host log file'
+assert_eq "" "$(cat "$SSH_LOG")" 'sync pull drives rsync, not a remote command'
 
-: > "$RSYNC_LOG"
-TT_RSYNC="$STUB" sh "$TT" install-remote macmini >/dev/null
-assert_contains "$(cat "$RSYNC_LOG")" "macmini:" 'install-remote writes to the host'
-
-SENT=$(grep '^carries: ' "$RSYNC_LOG")
-assert_contains "$SENT" "carries: bin" 'install-remote carries the executable'
-assert_contains "$SENT" "carries: lib" 'install-remote carries the report library'
-assert_contains "$SENT" "carries: .claude-plugin" 'install-remote carries the plugin manifest'
-assert_not_contains "$SENT" "carries: .superpowers" 'install-remote leaves the task workspace behind'
-assert_not_contains "$SENT" "carries: .git" 'install-remote leaves the git history behind'
-assert_not_contains "$SENT" "carries: tests" 'install-remote leaves the test suite behind'
-assert_not_contains "$SENT" "carries: docs" 'install-remote leaves the docs behind'
+: > "$RSYNC_LOG"; : > "$SSH_LOG"
+TT_SSH="$SSHSTUB" TT_RSYNC="$STUB" sh "$TT" install-remote macmini >/dev/null
+RAN=$(cat "$SSH_LOG")
+assert_contains "$RAN" "host: macmini" 'install-remote runs on the named host'
+assert_contains "$RAN" "https://github.com/Langerrr/timetrack.git" 'install-remote clones the public repository'
+assert_contains "$RAN" "machine=macmini" 'install-remote names the machine in its config'
+assert_eq "" "$(cat "$RSYNC_LOG")" 'install-remote transfers no files'
 
 assert_status 1 'sync pull without a host is rejected' -- sh "$TT" sync pull
+assert_status 1 'install-remote without a host is rejected' -- sh "$TT" install-remote
 assert_contains "$(sh "$TT" hooks-snippet claude)" "PreToolUse" 'claude snippet names the events'
 assert_contains "$(sh "$TT" hooks-snippet codex)" "PLUGIN_ROOT" 'codex snippet names the plugin root'
 
