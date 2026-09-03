@@ -251,9 +251,9 @@ Append to `tests/run.sh` before `finish`:
 printf 'Task 2: attribution and mode\n'
 assert_eq "sportx	." "$(sh "$TT" debug-attribute "$TT_ROOT/sportx")" 'project root gives subpath .'
 assert_eq "sportx	saas-backend" "$(sh "$TT" debug-attribute "$TT_ROOT/sportx/saas-backend")" 'nested gives subpath'
-assert_eq "~outside	/etc" "$(sh "$TT" debug-attribute /etc)" 'outside root books to ~outside'
+assert_eq "~outside	/etc" "$(sh "$TT" debug-attribute /etc)" 'outside root attributes to ~outside'
 assert_eq "sportx	." "$(sh "$TT" debug-attribute "$TT_ROOT/sportx/")" 'trailing slash tolerated'
-assert_eq "~root	." "$(sh "$TT" debug-attribute "$TT_ROOT")" 'the workspace root itself books to ~root'
+assert_eq "~root	." "$(sh "$TT" debug-attribute "$TT_ROOT")" 'the workspace root itself attributes to ~root'
 
 assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'default mode is paired'
 sh "$TT" solo "$TT_ROOT/sportx" >/dev/null

@@ -41,6 +41,20 @@ Columns, in order:
 | 10 | `session` | Harness session id, or `-` |
 | 11 | `note` | Free text, or `-` |
 
+New beat rows append optional lifecycle evidence while the first eleven columns
+remain stable:
+
+| # | Column | Meaning |
+|---|--------|---------|
+| 12 | `turn_id` | Codex turn identifier, or `-` |
+| 13 | `tool_use_id` | Codex tool-call identifier, or `-` |
+| 14 | `agent_id` | Codex subagent identifier, or `-` |
+| 15 | `agent_type` | Codex subagent type/profile, or `-` |
+| 16 | `assistant_words` | Final assistant-message word count on `Stop`, or `-` |
+
+Manual spans may remain eleven columns. Reports accept old, extended and mixed
+logs without migration. Raw assistant-message content is never persisted.
+
 Each row carries epoch seconds and a preformatted local timestamp written at
 capture time. Reporting therefore compares and sums integers, and behaves
 identically on both operating systems.
@@ -49,8 +63,8 @@ identically on both operating systems.
 
 `project` and `subpath` both derive from the agent's session working directory —
 the directory the agent was started in, delivered as `cwd` on hook stdin. An
-agent started in one repository and reading a sibling repository books its time
-to where it started.
+agent started in one repository and reading a sibling repository attributes its
+time to where it started.
 
 - Session directory under `TT_ROOT` (default `~/workspace`): `project` is the
   first path segment, `subpath` is the remainder, or `.` at the project root.
@@ -81,22 +95,52 @@ time. Two agents started in the same directory share one mode.
 Each beat is stamped with the mode in force at that instant, so a mode changed
 mid-run splits the run at the moment of the change.
 
+`UserPromptSubmit` is the first portable evidence that the user has returned.
+When a directory is solo, that hook changes it to paired before writing the
+prompt beat. Codex exposes no scroll, focus, composer or typing-start hook.
+
+After a solo `Stop`, timetrack can estimate reading from the final output size
+when the user next submits a prompt. The estimate is placed immediately before
+that prompt and is:
+
+    min(assistant_words * 60 / TT_READING_WPM,
+        actual Stop-to-prompt gap,
+        TT_MAX_READING_TIME)
+
+`TT_READING_WPM` defaults to 120 and is a personal, configurable assumption for
+careful non-native reading. `TT_MAX_READING_TIME` defaults to 600 seconds. The
+remainder of the solo gap is not counted. Estimated reading is paired time and
+is also disclosed as a non-additive `ESTIMATED` subset in reports.
+
 ### Reconstructing intervals
 
-Beats group by machine and session, sorted by start. Two consecutive beats less
-than `TT_IDLE_GAP` apart (default 900 seconds) contribute their difference,
-credited to the mode on the earlier beat. A longer gap contributes nothing and
-opens a new block.
+Beats group by machine, harness, session and session directory, sorted by start.
+Append order is the numeric tie-breaker for equal-second events. A complete
+`UserPromptSubmit` to `Stop`/`Interrupt` turn counts regardless of
+`TT_IDLE_GAP`; matched tool and subagent lifecycle pairs provide the same
+recovery evidence when a main-turn boundary is absent. Subagent activity shares
+the parent stream and is not added again when it overlaps the parent turn.
+
+For legacy and incomplete rows, two consecutive beats no more than
+`TT_IDLE_GAP` apart (default 900 seconds) contribute their difference, assigned
+to the earlier beat's mode. A paired `Stop` to a timely next prompt also uses
+this rule. A solo `Stop` never contributes the whole return gap; only its bounded
+reading estimate can contribute. Independent top-level sessions remain
+additive.
 
 Beats rather than start/stop pairs mean a killed terminal or a crashed harness
 costs the tail of one block and leaves no unterminated interval behind.
 
-Spans contribute `end - start`.
+Intervals and spans are reconstructed before applying the report range. Ranges
+are half-open and each interval is clipped to `[since, until)`. `--until D`
+means the first real instant after local date D, including D's final minute.
+`--by day` splits intervals at real local-day boundaries, including DST days
+that do not begin at 00:00. Spans contribute their clipped `end - start`.
 
 ## Storage
 
     ~/.timetrack/
-      config              # machine=, TT_ROOT=, TT_IDLE_GAP=
+      config              # machine= and TT_* preferences
       events-<machine>.tsv
       modes               # mode<TAB>absolute-path per session directory
 
@@ -112,6 +156,7 @@ hostname. Setting it explicitly keeps a renamed machine writing to the same file
     tt add <project> <duration> [note] [--at 'YYYY-MM-DD HH:MM']
     tt solo|paired [path]
     tt sessions
+    tt root
     tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
     tt sync pull <host>
     tt install-remote <host>
@@ -122,15 +167,19 @@ span at the current time. `tt add` prints the row it wrote.
 
 `tt report` covers today unless given a period.
 
-`tt report` prints one row per project with paired, solo, manual and total
-columns. `--detail` breaks projects out by subpath.
+`tt report` prints one row per project with paired, solo, manual, estimated and
+total columns. Estimated is a subset of paired, not another additive mode.
+`--detail` breaks projects out by subpath.
 
 ## Hook capture
 
-Hooks fire on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`
-and `Stop`. Each calls `tt hook`, which reads `session_id` and `cwd` from stdin
-with POSIX `sed`, falls back to `$PWD` when the field is absent, appends one
-line and exits.
+Claude Code hooks fire on `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse` and `Stop`. Codex additionally captures `Interrupt`, `SessionEnd`,
+`SubagentStart` and `SubagentStop`. Each calls `tt hook`, which reads
+`session_id`, `cwd` and available lifecycle identifiers from stdin with a POSIX
+awk scanner, falls back to `$PWD` when the path is absent, appends one line and
+exits. On `Stop`, it reduces `last_assistant_message` to a word count in memory
+and never writes the message.
 
 Installing the plugin wires these hooks. `tt hooks-snippet` prints the equivalent
 configuration for a machine set up by hand.
@@ -146,12 +195,15 @@ manifest beside `zforge` and `distributed-architect`.
       .codex-plugin/plugin.json
       bin/tt
       hooks/hooks.json
+      hooks/codex-hooks.json
       skills/timetrack/SKILL.md
+      skills/timetrack/scripts/tt
       README.md
 
 Dual manifests serve Claude Code and Codex from one source tree, following the
-layout `zforge` already uses. Installing the plugin wires the hooks. `bin/tt` is
-symlinked to `~/workspace/bin/tt` so the tool is usable straight from a shell.
+layout `zforge` already uses. Installing the plugin wires the hooks. The skill's
+bundled wrapper resolves `bin/tt` from the installed plugin root, so agent-driven
+commands need no PATH link. A symlink remains optional for direct shell use.
 
 The event log lives outside this repository. The tool is generic and shareable;
 the log is personal, and separating them leaves the plugin repository's
@@ -162,8 +214,9 @@ visibility a free choice.
 `skills/timetrack/SKILL.md`, loaded by both harnesses, covering four jobs:
 
 **Logging past work.** From "two hours on sportx yesterday afternoon for the
-architecture review", resolve `sportx` against the directories under `TT_ROOT`,
-convert the relative time to a concrete `--at` argument using the current
+architecture review", read `TT_ROOT` through `tt root`, resolve `sportx` against
+the directories beneath it, convert the relative time to a concrete `--at`
+argument using the current
 timestamp, run `tt add`, and show the row that was written.
 
 **Setting mode.** "I'm heading out, let it run" runs `tt solo`; the agent's own
@@ -194,11 +247,12 @@ its data until the next one.
 
 ## Out of scope
 
-A live stopwatch, editing beats, CSV export, a background daemon, idle
-detection, and anything resembling billing or invoicing.
+A live stopwatch, editing beats, CSV export, a background daemon, OS-level idle
+or input monitoring, and exact measurement of pre-submit reading or typing.
 
-## Open item
+## Codex integration status
 
-Codex's `[hooks]` TOML key shape, and whether it exposes a plugin-root variable
-equivalent to `${CLAUDE_PLUGIN_ROOT}`. Verify against codex-cli 0.152.1 before
-wiring. Where no variable exists, the Codex hook entry carries an absolute path.
+Codex CLI 0.152.1 accepts the manifest's explicit hooks path and exports
+`PLUGIN_ROOT` to plugin hook commands. Its hooks require interactive review and
+trust; a changed hook definition must be reviewed again after reinstalling the
+plugin.

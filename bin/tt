@@ -5,6 +5,10 @@ set -u
 TT_HOME=${TT_HOME:-$HOME/.timetrack}
 TT_ROOT=${TT_ROOT:-$HOME/workspace}
 TT_IDLE_GAP=${TT_IDLE_GAP:-900}
+TT_READING_WPM_SET=${TT_READING_WPM+x}
+TT_MAX_READING_TIME_SET=${TT_MAX_READING_TIME+x}
+TT_READING_WPM=${TT_READING_WPM:-120}
+TT_MAX_READING_TIME=${TT_MAX_READING_TIME:-600}
 
 tt_die() { printf 'tt: %s\n' "$1" >&2; exit 1; }
 
@@ -21,7 +25,7 @@ tt_root() {
   [ -n "${v:-}" ] && [ "$TT_ROOT" = "$HOME/workspace" ] && TT_ROOT=$v
   # Attribution matches "$root"/* against a path already normalised by tt_abs,
   # so a root written with a trailing or doubled slash would match nothing and
-  # book every project to ~outside. One character in a config file otherwise
+  # attribute every project to ~outside. One character in a config file otherwise
   # costs the whole log its attribution.
   TT_ROOT=$(printf '%s' "$TT_ROOT" | sed 's://*:/:g; s:/*$::')
   [ -n "$TT_ROOT" ] || TT_ROOT=/
@@ -134,7 +138,7 @@ tt_lock() {
 
 tt_unlock() { rmdir "$(tt_lock_dir)" 2>/dev/null || :; }
 
-tt_set_mode() { # mode [path]
+tt_set_mode() { # mode [path] [quiet]
   m=$1
   p=$(tt_abs "${2:-$PWD}")
   # The modes file separates its two fields with a TAB and its rows with a
@@ -170,7 +174,7 @@ tt_set_mode() { # mode [path]
   fi
   tt_unlock
   trap - EXIT HUP INT TERM
-  printf '%s: %s\n' "$m" "$p"
+  [ "${3:-}" = quiet ] || printf '%s: %s\n' "$m" "$p"
 }
 
 # Extracts a top-level JSON string field. A hook payload embeds the whole tool
@@ -228,6 +232,47 @@ tt_json_str() { # field json
 
 tt_clean() { # text
   printf '%s' "$1" | tr '\t\n\r' '   ' | cut -c1-200
+}
+
+# Counts whitespace-separated words in a JSON string token without ever writing
+# the token to disk. JSON-escaped newlines and tabs are separators too.
+tt_word_count() { # JSON string contents, still escaped
+  printf '%s' "$1" | awk '
+    { text = text (NR > 1 ? " " : "") $0 }
+    END {
+      gsub(/\\[nrt]/, " ", text)
+      gsub(/^[[:space:]]+/, "", text)
+      gsub(/[[:space:]]+$/, "", text)
+      if (text == "") print 0
+      else print split(text, word, /[[:space:]]+/)
+    }'
+}
+
+tt_positive_number() { # value
+  awk -v value="$1" 'BEGIN {
+    if (value ~ /^[0-9]+([.][0-9]+)?$/ && value + 0 > 0) exit 0
+    exit 1
+  }'
+}
+
+tt_reading_wpm() {
+  value=$TT_READING_WPM
+  if [ -z "$TT_READING_WPM_SET" ]; then
+    configured=$(tt_config TT_READING_WPM) || configured=''
+    [ -z "${configured:-}" ] || value=$configured
+  fi
+  tt_positive_number "$value" || value=120
+  printf '%s\n' "$value"
+}
+
+tt_max_reading_time() {
+  value=$TT_MAX_READING_TIME
+  if [ -z "$TT_MAX_READING_TIME_SET" ]; then
+    configured=$(tt_config TT_MAX_READING_TIME) || configured=''
+    [ -z "${configured:-}" ] || value=$configured
+  fi
+  tt_positive_number "$value" || value=600
+  printf '%s\n' "$value"
 }
 
 # Accepts 90m, 1.5h, 2h30m, or a bare number read as minutes.
@@ -288,12 +333,25 @@ cmd_hook() {
   [ -n "$sid" ] || sid='-'
   evt=$(tt_json_str hook_event_name "$input")
   [ -n "$evt" ] || evt='-'
+  turn=$(tt_json_str turn_id "$input")
+  [ -n "$turn" ] || turn='-'
+  tool=$(tt_json_str tool_use_id "$input")
+  [ -n "$tool" ] || tool='-'
+  agent=$(tt_json_str agent_id "$input")
+  [ -n "$agent" ] || agent='-'
+  agent_type=$(tt_json_str agent_type "$input")
+  [ -n "$agent_type" ] || agent_type='-'
+  words='-'
+  if [ "$evt" = Stop ]; then
+    message=$(tt_json_str last_assistant_message "$input")
+    [ -z "$message" ] || words=$(tt_word_count "$message")
+  fi
 
   # Codex sets CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA next to its own
   # PLUGIN_ROOT and PLUGIN_DATA, so a hook it runs answers to both names.
   # Only Codex sets the unprefixed pair, so that is read first. CODEX_HOME is
   # not consulted: a user may export it from a login shell, and a hook inherits
-  # the login environment, which would book every Claude beat as Codex.
+  # the login environment, which would attribute every Claude beat as Codex.
   if [ -n "${PLUGIN_ROOT:-}" ]; then harness=codex
   elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || [ -n "${CLAUDECODE:-}" ]; then harness=claude
   else harness='-'
@@ -305,10 +363,23 @@ cmd_hook() {
   sub=$(printf '%s' "$attrib" | cut -f2)
   mode=$(tt_mode "$cwd")
 
+  # Submitting a prompt is the first portable evidence that the user returned.
+  # Change the directory state before writing the beat so the new turn starts
+  # paired. Keep a failed mode write contained: hook capture must still return.
+  if [ "$evt" = UserPromptSubmit ] && [ "$mode" = solo ]; then
+    if (tt_set_mode paired "$cwd" quiet) >/dev/null 2>&1; then
+      mode=paired
+    else
+      mode=$(tt_mode "$cwd")
+    fi
+  fi
+
   mkdir -p "$TT_HOME" 2>/dev/null
-  printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
     "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
+    "$(tt_clean "$turn")" "$(tt_clean "$tool")" "$(tt_clean "$agent")" \
+    "$(tt_clean "$agent_type")" "$words" \
     >> "$(tt_log_file)" 2>/dev/null
   return 0
 }
@@ -332,6 +403,27 @@ tt_midnight() { # epoch -> epoch of that local day's first instant
   printf '%s\n' "$e"
 }
 
+tt_day_start() { # YYYY-MM-DD -> first real instant of that local day
+  noon=$(tt_epoch "$1 12:00") || return 1
+  tt_midnight "$noon"
+}
+
+tt_next_midnight() { # local-day start -> next local-day start
+  # Thirty-six elapsed hours from a day boundary always lands inside the next
+  # civil day across ordinary 23-, 24- and 25-hour DST days.
+  tt_midnight "$(( $1 + 129600 ))"
+}
+
+tt_day_boundaries() { # since until; writes report-only synthetic rows
+  boundary=$(tt_midnight "$1") || return 1
+  while [ "$boundary" -lt "$2" ]; do
+    printf '%s\tboundary\t%s\n' "$(tt_fmt "$boundary" '%Y-%m-%d')" "$boundary"
+    next=$(tt_next_midnight "$boundary") || return 1
+    [ "$next" -gt "$boundary" ] || return 1
+    boundary=$next
+  done
+}
+
 cmd_report() {
   now=$(tt_now)
   since=''; upto=$now; byday=0; detail=0
@@ -345,11 +437,12 @@ cmd_report() {
                 since=$(tt_midnight "$((mid - (u - 1) * 86400))") || exit 1
                 shift ;;
       month)    ym=$(tt_fmt "$now" '%Y-%m') || exit 1
-                since=$(tt_epoch "$ym-01 00:00") || exit 1; shift ;;
+                since=$(tt_day_start "$ym-01") || exit 1; shift ;;
       --since)  [ $# -ge 2 ] || tt_die "--since needs a YYYY-MM-DD argument"
-                since=$(tt_epoch "$2 00:00") || exit 1; shift 2 ;;
+                since=$(tt_day_start "$2") || exit 1; shift 2 ;;
       --until)  [ $# -ge 2 ] || tt_die "--until needs a YYYY-MM-DD argument"
-                upto=$(tt_epoch "$2 23:59") || exit 1; shift 2 ;;
+                day_start=$(tt_day_start "$2") || exit 1
+                upto=$(tt_next_midnight "$day_start") || exit 1; shift 2 ;;
       --by)     [ $# -ge 2 ] || tt_die "--by needs project or day"
                 [ "$2" = day ] && byday=1; shift 2 ;;
       --detail) detail=1; shift ;;
@@ -360,23 +453,29 @@ cmd_report() {
 
   gap=$(tt_config TT_IDLE_GAP) || gap=''
   [ -n "${gap:-}" ] || gap=$TT_IDLE_GAP
+  tt_positive_number "$gap" || gap=900
+  reading_wpm=$(tt_reading_wpm)
+  max_reading=$(tt_max_reading_time)
   lib=${TT_LIB:-$(tt_self)/../lib}
 
-  # The interval walk diffs each beat against the one before it, so the stream
-  # has to arrive ascending by start. Hooks fire per tool call, tool calls can
-  # run in parallel, and each hook stamps its own time before racing to append,
-  # so the log itself is not ordered. sort does this in one pass; sorting inside
-  # awk would be quadratic over a log that grows to hundreds of thousands of rows.
+  # Prefix each row with its input sequence before sorting. The sequence is the
+  # numeric tie-breaker for equal-second events, preserving append order without
+  # relying on sort's implementation-specific final lexical comparison.
   tab=$(printf '\t')
-  cat "$TT_HOME"/events-*.tsv 2>/dev/null \
-    | sort -t "$tab" -k 3,3n \
+  {
+    cat "$TT_HOME"/events-*.tsv 2>/dev/null
+    [ "$byday" -eq 0 ] || tt_day_boundaries "$since" "$upto"
+  } | awk -F '\t' '{ printf "%d\t%s\n", NR, $0 }' \
+    | sort -t "$tab" -k 4,4n -k 1,1n \
+    | cut -f 2- \
     | awk -v since="$since" -v upto="$upto" -v gap="$gap" \
+          -v reading_wpm="$reading_wpm" -v max_reading="$max_reading" \
           -v byday="$byday" -v detail="$detail" -f "$lib/report.awk"
 }
 
 cmd_init() {
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
-  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n' > "$TT_HOME/config"
+  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n# TT_READING_WPM=120\n# TT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
   f=$(tt_log_file); [ -f "$f" ] || : > "$f"
   f=$(tt_modes_file); [ -f "$f" ] || : > "$f"
   printf 'initialised %s (machine: %s)\n' "$TT_HOME" "$(tt_machine)"
@@ -498,13 +597,16 @@ EOF
 }
 
 cmd_hooks_snippet() {
-  cmd='sh -c '"'"'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt" hook'"'"''
   case "${1:-claude}" in
-    claude) printf 'Add to ~/.claude/settings.json under "hooks":\n\n' ;;
-    codex)  printf 'Add to ~/.codex/config.toml under [hooks], or ship hooks/hooks.json:\n\n' ;;
+    claude) events='SessionStart UserPromptSubmit PreToolUse PostToolUse Stop'
+            cmd='sh -c '"'"'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt" hook'"'"''
+            printf 'Add to ~/.claude/settings.json under "hooks":\n\n' ;;
+    codex)  events='SessionStart UserPromptSubmit PreToolUse PostToolUse Stop Interrupt SessionEnd SubagentStart SubagentStop'
+            cmd='sh -c '"'"'exec "$PLUGIN_ROOT/bin/tt" hook'"'"''
+            printf 'Add to ~/.codex/config.toml under [hooks], or ship hooks/codex-hooks.json:\n\n' ;;
     *)      tt_die "usage: tt hooks-snippet [claude|codex]" ;;
   esac
-  for evt in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
+  for evt in $events; do
     printf '  %s -> %s\n' "$evt" "$cmd"
   done
   printf '\nWhen no plugin root is exported, replace it with the absolute path to bin/tt.\n'
@@ -526,10 +628,12 @@ RECORD
   paired [PATH]      it is working alongside you — the default
 
 READ
+  root               print the configured project root
   report [today|week|month] [--since D] [--until D]
          [--by project|day] [--detail]
       Time per project, covering today unless given a period. D is
-      YYYY-MM-DD. --detail breaks each project out by sub-directory.
+      YYYY-MM-DD; --until includes that whole local day. ESTIMATED is a
+      subset of PAIRED. --detail breaks projects out by sub-directory.
   sessions           session directories whose mode is set, and their modes
 
 OTHER MACHINES
@@ -554,9 +658,10 @@ sub=${1:-help}
 [ $# -gt 0 ] && shift
 case "$sub" in
   init)          cmd_init "$@" ;;
-  hook)          cmd_hook || true; exit 0 ;;
+  hook)          (cmd_hook) || true; exit 0 ;;
   add)           cmd_add "$@" ;;
   help|-h|--help) cmd_help ;;
+  root)          tt_root ;;
   solo)          tt_set_mode solo "${1:-$PWD}" ;;
   paired)        tt_set_mode paired "${1:-$PWD}" ;;
   sessions)      cmd_sessions ;;

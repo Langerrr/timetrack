@@ -1,11 +1,13 @@
 {
   "name": "timetrack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Per-project time tracking across machines and agent harnesses, separating paired, solo and manual time.",
   "author": { "name": "lan" },
   "repository": "https://github.com/Langerrr/timetrack",
   "license": "MIT",
   "keywords": ["time", "tracking", "productivity"],
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "timetrack",
     "shortDescription": "Per-project time tracking across machines and harnesses.",

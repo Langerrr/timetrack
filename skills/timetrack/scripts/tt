@@ -1,0 +1,17 @@
+#!/bin/sh
+# Resolve the plugin root from this skill so Codex does not need tt on PATH.
+set -u
+
+self=$0
+while [ -L "$self" ]; do
+  directory=$(cd "$(dirname "$self")" && pwd) || exit 1
+  target=$(readlink "$self") || exit 1
+  case "$target" in
+    /*) self=$target ;;
+    *)  self=$directory/$target ;;
+  esac
+done
+
+directory=$(cd "$(dirname "$self")" && pwd) || exit 1
+plugin_root=$(cd "$directory/../../.." && pwd) || exit 1
+exec "$plugin_root/bin/tt" "$@"

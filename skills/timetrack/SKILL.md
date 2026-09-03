@@ -5,14 +5,18 @@ description: Use when the user wants to log time they spent, change whether an a
 
 # timetrack
 
-`tt` records per-project time. Run `tt help` for the full surface.
+`tt` records per-project time. Resolve `scripts/tt` relative to this `SKILL.md`
+and invoke it with `sh`; do not assume bare `tt` is on `PATH`. In the examples
+below, `$TT_CMD` is that absolute script path. Run `sh "$TT_CMD" help` for the
+full surface.
 
 ## Logging past work
 
 The user states a project, a duration, and usually when. Resolve each before running anything.
 
-1. **Project.** Match what they said against the directories under `~/workspace`
-   (`ls ~/workspace`). "sportx", "the sportsx thing" and "SportX" all resolve to `sportx`.
+1. **Project.** Read the configured project root with `sh "$TT_CMD" root`, then
+   match what they said against the directories immediately under that path.
+   "sportx", "the sportsx thing" and "SportX" all resolve to `sportx`.
    Ask when two directories match equally well, and ask when **none** does: `tt add`
    accepts any string as PROJECT, so a name you guessed at creates a project that
    is indistinguishable from a real one in every report afterwards. Say which
@@ -27,7 +31,7 @@ The user states a project, a duration, and usually when. Resolve each before run
 
 Then run it and show the row:
 
-    tt add sportx 2h "architecture review" --at '2026-09-01 14:00'
+    sh "$TT_CMD" add sportx 2h "architecture review" --at '2026-09-01 14:00'
 
 The note is a single argument and must be quoted. `tt add` treats every argument
 that is not `--at` as the note and keeps only the last one, so
@@ -42,37 +46,43 @@ that is not `--at` as the note and keeps only the last one, so
 running while they are elsewhere. Mode is held per session directory, so running
 these from your own shell keys them to the right session automatically.
 
-    tt solo      # "I'm heading out", "let it run", "going to lunch"
-    tt paired    # "I'm back", "watching now"
+    sh "$TT_CMD" solo      # "I'm heading out", "let it run", "going to lunch"
+    sh "$TT_CMD" paired    # "I'm back", "watching now"
 
 Mode applies from that moment forward. It does not reach backwards over work
-already recorded.
+already recorded. Codex also returns a solo directory to paired automatically
+when the user submits their next prompt. If they want the new turn to continue
+solo, set solo again during that turn.
 
 ## Reporting
 
-    tt report            # today
-    tt report week
-    tt report month
-    tt report --since 2026-08-01 --until 2026-08-31
-    tt report --by day
-    tt report --detail   # break projects out by sub-directory
+    sh "$TT_CMD" report            # today
+    sh "$TT_CMD" report week
+    sh "$TT_CMD" report month
+    sh "$TT_CMD" report --since 2026-08-01 --until 2026-08-31
+    sh "$TT_CMD" report --by day
+    sh "$TT_CMD" report --detail   # break projects out by sub-directory
 
-Read the table back in prose, leading with the number they asked for.
+Read the table back in prose, leading with the number they asked for. `ESTIMATED`
+is the portion of `PAIRED` inferred as reading time after a solo response; it is
+a disclosed subset and must not be added to `TOTAL` again.
 
 ## Correcting a mistake
 
-The log is a tab-separated file at `~/.timetrack/events-<machine>.tsv`, eleven
-columns: `iso_start, kind, start, end, machine, harness, mode, project, subpath,
-session, note`. Column 11 holds the user's note on a `span` and the hook event
-name (`SessionStart`, `PreToolUse`, …) on a `beat`, so never read a beat's last
-column back as something the user wrote. Rows with kind `span` are manual entries
-and may be edited or deleted. Rows with kind `beat` are captured evidence: leave
-them as written.
+The log is a tab-separated file at `~/.timetrack/events-<machine>.tsv`. Manual
+`span` rows retain the original eleven columns. New `beat` rows append
+`turn_id, tool_use_id, agent_id, agent_type, assistant_words` as columns 12–16;
+old eleven-column beats remain valid. Column 11 holds the user's note on a span
+and the hook event name (`SessionStart`, `PreToolUse`, …) on a beat, so never
+read it back as something the user wrote. `assistant_words` is a count; raw
+assistant output is never stored. Span rows may be edited or deleted. Beat rows
+are captured evidence: leave them as written.
 
 ## Rules
 
-- Log only a duration the user stated or confirmed. Never estimate one from how
-  long a conversation ran.
+- Manually log only a duration the user stated or confirmed. Do not invent a
+  manual entry from conversation length; the reporter owns its explicit,
+  bounded solo-reading estimate.
 - Time coming up in conversation is conversation. Log when asked to log.
 - Always show the written row.
 - One `tt add` per distinct block of work. Do not batch several into one row.

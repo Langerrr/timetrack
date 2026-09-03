@@ -1,7 +1,8 @@
 # timetrack
 
-`tt` records how much time goes into each project under `~/workspace`, across
-several machines and several agent harnesses. It runs as a plugin: once
+`tt` records how much time goes into each project under a configurable project
+root (`~/workspace` by default), across several machines and several agent
+harnesses. It runs as a plugin: once
 installed, hooks in Claude Code and Codex fire on their own and the log fills
 itself. Nothing to start, nothing to stop.
 
@@ -15,12 +16,13 @@ Every event lands in one row. There are two kinds:
   point in time, not an interval.
 - **`span`** — written by `tt add`, bounding a duration you stated.
 
-Reports rebuild intervals from beats: two consecutive beats from the same
-machine, session and directory that are less than `TT_IDLE_GAP` apart (900
-seconds by default) contribute their difference. A longer gap contributes
-nothing and starts a new block. Because a beat is complete the moment it is
-written, a killed terminal or a crashed harness costs the tail of one block and
-leaves nothing dangling.
+Reports rebuild intervals from beats. Complete Codex turns, tool calls and
+subagent runs are known-active intervals even when they exceed `TT_IDLE_GAP`.
+For legacy or incomplete lifecycle data, two consecutive beats from the same
+machine, harness, session and directory contribute their difference only when
+they are no more than `TT_IDLE_GAP` apart (900 seconds by default). A final
+unmatched start never extends to report time, so a killed terminal or crashed
+harness leaves nothing dangling.
 
 ### The three modes
 
@@ -30,7 +32,7 @@ leaves nothing dangling.
 | `solo` | The agent was running while you were elsewhere. |
 | `manual` | Time that involved no agent at all. |
 
-`paired` and `solo` apply to agent time and are **set by hand**:
+`paired` and `solo` apply to agent time and can be **set by hand**:
 
 ```sh
 tt solo      # heading out, leaving a long run going
@@ -45,6 +47,15 @@ directory with no mode set reads as `paired`.
 Mode applies **forward, from the moment you set it**. It does not reach back over
 beats already written. Setting `solo` after a two-hour unattended run does not
 reclassify that run; each beat carries the mode that was in force when it fired.
+
+Submitting a new prompt after a solo run automatically returns that directory to
+`paired` at the prompt timestamp. Codex has no hook for scrolling, focusing the
+composer or beginning to type, so timetrack cannot directly observe when reading
+started. Instead, when a solo `Stop` contains a final assistant message, it
+stores only that message's word count. On the next prompt it estimates reading
+time at 120 words per minute, bounded by both the real Stop-to-prompt gap and ten
+minutes. The rest of the solo gap stays uncounted. Reports show this estimate as
+a disclosed subset of paired time.
 
 `manual` is not something you set. Every `tt add` row is `manual`, because a span
 you typed in is by definition time no hook was watching.
@@ -98,10 +109,15 @@ silent-skip behaviour is what was observed here, not the granting. That same
 help text carries a `--dangerously-bypass-hook-trust` flag for vetted automation;
 it is not the normal path and should not be how you install this.
 
+Updating this plugin changes the hook definition and its trust hash. After
+installing a new version, review and trust the current hooks again through
+`/hooks` in an interactive Codex session.
+
 ### Put `tt` on your PATH
 
-The hooks find `tt` through the plugin root, so tracking works without this. You
-need it to run `tt report`, `tt add` and `tt solo` yourself.
+The hooks and bundled agent skill find `tt` through the plugin root, so both
+automatic tracking and natural-language requests work without this. You need a
+link only to type `tt report`, `tt add` or `tt solo` directly in your own shell.
 
 ```sh
 ln -sf ~/workspace/langerrr/timetrack/bin/tt ~/workspace/bin/tt
@@ -220,13 +236,15 @@ the default state.
 **Read**
 
 ```
+tt root
 tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
 tt sessions
 ```
 
-`report` covers today unless given a period. `D` is `YYYY-MM-DD`. `--detail`
-breaks each project out by sub-directory. `sessions` lists every session
-directory whose mode has been set, and its mode.
+`root` prints the effective configured project root. `report` covers today
+unless given a period. `D` is `YYYY-MM-DD`, and an `--until` date includes that
+entire local day. `--detail` breaks each project out by sub-directory. `sessions`
+lists every session directory whose mode has been set, and its mode.
 
 **Other machines**
 
@@ -260,19 +278,21 @@ only its last word is kept. `tt add` prints the row it wrote.
 
 ```sh
 $ tt report today
-PROJECT     PAIRED      SOLO    MANUAL     TOTAL
-sportx      0h 00m    0h 00m    3h 30m    3h 30m
-stratos     0h 00m    0h 00m    0h 45m    0h 45m
-TOTAL       0h 00m    0h 00m    4h 15m    4h 15m
+PROJECT     PAIRED      SOLO    MANUAL ESTIMATED     TOTAL
+sportx      0h 10m    0h 00m    3h 30m    0h 03m    3h 40m
+stratos     0h 00m    0h 00m    0h 45m    0h 00m    0h 45m
+TOTAL       0h 10m    0h 00m    4h 15m    0h 03m    4h 25m
 
 $ tt report --by day
-DAY            PAIRED      SOLO    MANUAL     TOTAL
-2026-09-02     0h 00m    0h 00m    4h 15m    4h 15m
-TOTAL          0h 00m    0h 00m    4h 15m    4h 15m
+DAY            PAIRED      SOLO    MANUAL ESTIMATED     TOTAL
+2026-09-02     0h 10m    0h 00m    4h 15m    0h 03m    4h 25m
+TOTAL          0h 10m    0h 00m    4h 15m    0h 03m    4h 25m
 ```
 
 With no period, `tt report` covers today. `--detail` breaks each project out by
-sub-directory. `--since` and `--until` take `YYYY-MM-DD`.
+sub-directory. `--since` and `--until` take `YYYY-MM-DD`. `ESTIMATED` is already
+included in `PAIRED` and `TOTAL`; it is shown separately to disclose how much of
+the paired total came from solo-output reading estimates.
 
 ```sh
 $ tt sessions
@@ -291,8 +311,8 @@ hours on sportx for the architecture review", "I'm heading out, let it run", or
 
 ## The log format
 
-`~/.timetrack/events-<machine>.tsv`, one event per line, eleven TAB-separated
-columns:
+`~/.timetrack/events-<machine>.tsv`, one event per line. The first eleven
+TAB-separated columns remain unchanged:
 
 ```
 iso_start  kind  start  end  machine  harness  mode  project  subpath  session  note
@@ -312,9 +332,22 @@ iso_start  kind  start  end  machine  harness  mode  project  subpath  session  
 | 10 | `session` | Harness session id, or `-` |
 | 11 | `note` | On a `span`, your free-text note (`-` if none). On a `beat`, the hook event name. |
 
+New beat rows append five lifecycle fields:
+
+| # | Column | Meaning |
+|---|---|---|
+| 12 | `turn_id` | Codex turn identifier, or `-` |
+| 13 | `tool_use_id` | Codex tool-call identifier, or `-` |
+| 14 | `agent_id` | Codex subagent identifier, or `-` |
+| 15 | `agent_type` | Codex subagent type/profile, or `-` |
+| 16 | `assistant_words` | Word count of the final message on `Stop`, or `-` |
+
 Column 11 carries different things by kind, and that is deliberate: a span's note
 is what you said about it, a beat's note is which hook produced it
-(`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`).
+(`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and
+the other documented lifecycle events). Manual spans and old beats may remain
+eleven columns; reports read old, new and mixed logs without migration. Raw
+assistant-message text is never persisted.
 
 Every row holds both epoch seconds and a preformatted local timestamp, so
 reporting compares and sums integers and behaves identically on Linux and macOS.
@@ -323,7 +356,7 @@ reporting compares and sums integers and behaves identically on Linux and macOS.
 
 `project` and `subpath` both come from the agent's **session directory** — where
 the agent was started, delivered as `cwd` on hook stdin. An agent started in one
-repository and reading a sibling books its time to where it started.
+repository and reading a sibling attributes its time to where it started.
 
 - Under `TT_ROOT`: `project` is the first path segment, `subpath` the rest (or `.`).
 - At `TT_ROOT` itself: `project` is `~root`, `subpath` is `.`.
@@ -343,6 +376,8 @@ wins over it.
 machine=DESKTOP-G7ULRNT
 TT_ROOT=/home/lan/workspace
 TT_IDLE_GAP=900
+TT_READING_WPM=120
+TT_MAX_READING_TIME=600
 ```
 
 Setting `machine=` explicitly keeps a renamed machine writing to the same log
@@ -356,6 +391,8 @@ must match the name you pull it by.
 | `TT_HOME` | `~/.timetrack` | Where the log, config and modes live |
 | `TT_ROOT` | `~/workspace` | The root that project names are taken under |
 | `TT_IDLE_GAP` | `900` | Seconds between beats that still count as continuous |
+| `TT_READING_WPM` | `120` | Personal reading-speed assumption for solo-output estimates |
+| `TT_MAX_READING_TIME` | `600` | Maximum seconds added by one solo-output reading estimate |
 | `TT_NOW` | — | Override "now" as epoch seconds; used by the tests |
 | `TT_LIB` | `<tt>/../lib` | Where `report.awk` is found |
 | `TT_RSYNC` | `rsync` | The rsync `tt sync pull` invokes |
@@ -363,13 +400,18 @@ must match the name you pull it by.
 
 ## Which plugin-root variable each harness exports
 
-Both harnesses run the same hook command from `hooks/hooks.json`:
+Claude Code runs the shared command from `hooks/hooks.json`; Codex selects
+`hooks/codex-hooks.json` from its manifest so it can also capture `Interrupt`,
+`SessionEnd`, `SubagentStart` and `SubagentStop`. Both commands resolve `tt`
+through the plugin root. Claude Code uses the compatibility fallback, while the
+Codex-specific file uses `$PLUGIN_ROOT` directly:
 
 ```sh
 sh -c 'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt" hook'
+sh -c 'exec "$PLUGIN_ROOT/bin/tt" hook'
 ```
 
-That one line works for both because of how they differ:
+The available variables differ by harness:
 
 | Variable | Claude Code | Codex |
 |---|---|---|
@@ -383,11 +425,11 @@ Codex exports the `CLAUDE_*` pair alongside its own, so `CLAUDE_PLUGIN_ROOT`
 alone cannot tell the two apart. `PLUGIN_ROOT` is set only by Codex, which is why
 `tt` tests it **first** when stamping column 6, falling back to
 `CLAUDE_PLUGIN_ROOT` or `CLAUDECODE` for Claude Code. Reading them the other way
-round books every Codex beat as `claude`.
+round attributes every Codex beat to `claude`.
 
 `CODEX_HOME` is deliberately not consulted: it is configuration a user may export
 from a login shell, and a hook inherits the login environment, so keying on it
-would book every Claude Code beat as `codex`.
+would attribute every Claude Code beat to `codex`.
 
 If you would rather wire the hooks by hand than install the plugin,
 `tt hooks-snippet claude` and `tt hooks-snippet codex` print exactly what to add.
@@ -401,8 +443,9 @@ If you would rather wire the hooks by hand than install the plugin,
 4. **Look for the log** — `ls ~/.timetrack/`. No file at all means `tt init` was
    never run.
 5. **Check the log directly** — `tail ~/.timetrack/events-*.tsv`. Rows present but
-   an empty report means the beats fall outside the reporting window, or every
-   pair of them is more than `TT_IDLE_GAP` apart.
+   an empty report means the beats fall outside the reporting window, or there
+   is neither a complete lifecycle interval nor a legacy pair within
+   `TT_IDLE_GAP`.
 6. **Project reads `~outside`?** The agent was started outside `TT_ROOT`. Set
    `TT_ROOT=` in `~/.timetrack/config`.
 7. **Report reads `0h 00m`?** That is real: a short session produces beats only
