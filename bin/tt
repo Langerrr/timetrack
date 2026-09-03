@@ -322,7 +322,14 @@ cmd_report() {
   [ -n "${gap:-}" ] || gap=$TT_IDLE_GAP
   lib=${TT_LIB:-$(tt_self)/../lib}
 
+  # The interval walk diffs each beat against the one before it, so the stream
+  # has to arrive ascending by start. Hooks fire per tool call, tool calls can
+  # run in parallel, and each hook stamps its own time before racing to append,
+  # so the log itself is not ordered. sort does this in one pass; sorting inside
+  # awk would be quadratic over a log that grows to hundreds of thousands of rows.
+  tab=$(printf '\t')
   cat "$TT_HOME"/events-*.tsv 2>/dev/null \
+    | sort -t "$tab" -k 3,3n \
     | awk -v since="$since" -v upto="$upto" -v gap="$gap" \
           -v byday="$byday" -v detail="$detail" -f "$lib/report.awk"
 }

@@ -146,6 +146,27 @@ beat 1900000000 paired sportx . s1
 beat 1900000060 paired sportx . s1
 assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 01m" 'a 60s gap is counted'
 
+# Beats reach the log in whatever order parallel hooks win the append, so the
+# report has to order them itself. Written newest-first, these three still form
+# one two-minute block.
+: > "$LOG"
+beat 1900000120 paired sportx . s1
+beat 1900000000 paired sportx . s1
+beat 1900000060 paired sportx . s1
+assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 02m" 'beats appended out of order still total their full block'
+
+# The same, across two machines interleaved into one stream.
+: > "$LOG"
+OTHER="$TT_HOME/events-macmini.tsv"
+beat 1900000120 paired sportx . s1
+beat 1900000000 paired sportx . s1
+printf '%s\tbeat\t1900000300\t1900000300\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n%s\tbeat\t1900000060\t1900000060\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n' \
+  "$(sh "$TT" debug-iso 1900000300)" "$(sh "$TT" debug-iso 1900000060)" > "$OTHER"
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_contains "$OUT" "0h 02m" 'out-of-order beats from one machine still total'
+assert_contains "$OUT" "0h 04m" 'out-of-order beats from another machine still total'
+rm -f "$OTHER"
+
 # A gap wider than the threshold contributes nothing.
 : > "$LOG"
 beat 1900000000 paired sportx . s1

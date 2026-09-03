@@ -380,9 +380,9 @@ If you would rather wire the hooks by hand than install the plugin,
 
 ## Requirements
 
-`sh`, `awk`, `sed`, `tr`, `date`, `hostname`, `mkdir`, `cat`, `cut`, `head`,
-`dirname`, `readlink`. All are POSIX base utilities and present on Ubuntu, WSL2
-and macOS. Both BSD and GNU `date` are handled.
+`sh`, `awk`, `sed`, `sort`, `tr`, `date`, `hostname`, `mkdir`, `mv`, `rm`,
+`cat`, `cut`, `head`, `dirname`, `readlink`. All are POSIX base utilities and
+present on Ubuntu, WSL2 and macOS. Both BSD and GNU `date` are handled.
 
 `rsync` and `ssh` are needed only by `tt sync pull` and `tt install-remote`.
 
