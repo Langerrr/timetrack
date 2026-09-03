@@ -19,6 +19,12 @@ tt_home() { printf '%s\n' "$TT_HOME"; }
 tt_root() {
   v=$(tt_config TT_ROOT) || v=''
   [ -n "${v:-}" ] && [ "$TT_ROOT" = "$HOME/workspace" ] && TT_ROOT=$v
+  # Attribution matches "$root"/* against a path already normalised by tt_abs,
+  # so a root written with a trailing or doubled slash would match nothing and
+  # book every project to ~outside. One character in a config file otherwise
+  # costs the whole log its attribution.
+  TT_ROOT=$(printf '%s' "$TT_ROOT" | sed 's://*:/:g; s:/*$::')
+  [ -n "$TT_ROOT" ] || TT_ROOT=/
   printf '%s\n' "$TT_ROOT"
 }
 

@@ -31,6 +31,15 @@ assert_eq "~outside	/etc" "$(sh "$TT" debug-attribute /etc)" 'outside root books
 assert_eq "sportx	." "$(sh "$TT" debug-attribute "$TT_ROOT/sportx/")" 'trailing slash tolerated'
 assert_eq "~root	." "$(sh "$TT" debug-attribute "$TT_ROOT")" 'the workspace root itself books to ~root'
 
+# A root written with a trailing slash must not compare against a doubled one.
+assert_eq "$TT_ROOT" "$(TT_ROOT="$TT_ROOT/" sh "$TT" debug-root)" 'a trailing slash on TT_ROOT is stripped'
+assert_eq "$TT_ROOT" "$(TT_ROOT="$TT_ROOT///" sh "$TT" debug-root)" 'several trailing slashes are stripped'
+assert_eq "sportx	." "$(TT_ROOT="$TT_ROOT/" sh "$TT" debug-attribute "$TT_ROOT/sportx")" 'a trailing slash on TT_ROOT still attributes the project'
+assert_eq "~root	." "$(TT_ROOT="$TT_ROOT/" sh "$TT" debug-attribute "$TT_ROOT")" 'a trailing slash on TT_ROOT still books the root itself'
+printf 'TT_ROOT=%s/\n' "$TT_ROOT" > "$TT_HOME/config"
+assert_eq "sportx	." "$(HOME="$SANDBOX" TT_ROOT="$SANDBOX/workspace" sh "$TT" debug-attribute "$TT_ROOT/sportx")" 'a trailing slash in the config file is stripped too'
+rm -f "$TT_HOME/config"
+
 assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'default mode is paired'
 sh "$TT" solo "$TT_ROOT/sportx" >/dev/null
 assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'solo is recorded'
