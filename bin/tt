@@ -113,10 +113,42 @@ tt_mode() { # abs-path -> paired|solo
   printf '%s\n' "$m"
 }
 
+# mkdir either creates the directory or fails, atomically, on every POSIX
+# filesystem -- and unlike flock it exists on macOS. Held only across the
+# read-modify-write below, which is one awk and one mv, so contention clears in
+# milliseconds. Each retry is itself a fork, which paces the spin; only a lock
+# held far longer than any real write reaches the sleep, and a lock left behind
+# by a killed process is refused rather than waited on forever.
+tt_lock_dir() { printf '%s/modes.lock\n' "$TT_HOME"; }
+
+tt_lock() {
+  d=$(tt_lock_dir)
+  i=0
+  while ! mkdir "$d" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -lt 200 ] || sleep 1
+    [ "$i" -lt 210 ] || return 1
+  done
+  return 0
+}
+
+tt_unlock() { rmdir "$(tt_lock_dir)" 2>/dev/null || :; }
+
 tt_set_mode() { # mode [path]
   m=$1
   p=$(tt_abs "${2:-$PWD}")
+  # The modes file separates its two fields with a TAB and its rows with a
+  # newline, so a path holding either cannot be stored and read back as itself.
+  # Refusing it costs two comparisons; an escaping scheme would cost a format.
+  tab=$(printf '\t')
+  nl=$(printf '\nx'); nl=${nl%x}
+  case "$p" in
+    *"$tab"*) tt_die "cannot record a path containing a tab: $p" ;;
+    *"$nl"*)  tt_die "cannot record a path containing a newline: $p" ;;
+  esac
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  tt_lock || tt_die "timed out waiting for $(tt_lock_dir); if no other tt is running, remove it"
+  trap 'tt_unlock' EXIT HUP INT TERM
   f=$(tt_modes_file)
   if [ -f "$f" ]; then src=$f; else src=/dev/null; fi
   # Rewritten whole into a temporary file and moved into place, so a reader
@@ -136,6 +168,8 @@ tt_set_mode() { # mode [path]
   else
     rm -f "$t"; tt_die "cannot write $f"
   fi
+  tt_unlock
+  trap - EXIT HUP INT TERM
   printf '%s: %s\n' "$m" "$p"
 }
 

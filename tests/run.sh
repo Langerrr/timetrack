@@ -63,6 +63,29 @@ assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/coll/x")" 'colliding paths hol
 assert_eq "2" "$(sh "$TT" sessions | grep -c 'coll')" 'both colliding paths are listed'
 sh "$TT" paired "$TT_ROOT/coll/x" >/dev/null
 
+# One shared file is read, rewritten and moved into place, so simultaneous sets
+# on distinct paths must not overwrite one another.
+i=1
+while [ "$i" -le 20 ]; do
+  sh "$TT" solo "$TT_ROOT/conc$i" >/dev/null 2>&1 &
+  i=$((i + 1))
+done
+wait
+assert_eq "20" "$(sh "$TT" sessions | grep -c '/conc')" 'twenty simultaneous sets on distinct paths all survive'
+assert_eq "" "$(ls -d "$TT_HOME/modes.lock" 2>/dev/null)" 'the lock is released once the set finishes'
+
+# A path holding a TAB or a newline cannot be stored and read back as itself:
+# the TAB separates the two fields and the newline separates the rows. Refused
+# at the door, because a store that silently disagrees with itself is worse.
+TABPATH=$(printf '%s/tab\there' "$TT_ROOT")
+NLPATH=$(printf '%s/nl\nphantom' "$TT_ROOT")
+assert_status 1 'a path holding a tab is refused' -- sh "$TT" solo "$TABPATH"
+assert_status 1 'a path holding a newline is refused' -- sh "$TT" solo "$NLPATH"
+assert_eq "0" "$(sh "$TT" sessions | grep -cE 'tab|phantom')" 'a refused path writes nothing'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TABPATH")" 'a tab-bearing path reads as paired rather than failing'
+assert_eq "paired" "$(sh "$TT" debug-mode "$NLPATH")" 'a newline-bearing path reads as paired rather than failing'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/nl")" 'a refused newline path fabricates no entry for another path'
+
 # Setting a mode twice replaces the line rather than adding a second one.
 sh "$TT" solo "$TT_ROOT/tuurny" >/dev/null
 sh "$TT" paired "$TT_ROOT/tuurny" >/dev/null

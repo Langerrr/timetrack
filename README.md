@@ -126,13 +126,15 @@ with a **private** remote:
 
 ```sh
 git -C ~/.timetrack init -b main
-printf 'modes\n' > ~/.timetrack/.gitignore
+printf 'modes\nmodes.lock/\n' > ~/.timetrack/.gitignore
 git -C ~/.timetrack remote add origin git@github.com:you/timetrack-log.git
 git -C ~/.timetrack add -A
 git -C ~/.timetrack commit -m "Start the time log"
 ```
 
 `modes` is gitignored on purpose: it is live per-machine state, not history.
+`modes.lock/` is the directory `tt solo` and `tt paired` create to hold the file
+while they rewrite it; it exists only for the length of a write.
 
 Each machine appends only to its own `events-<machine>.tsv`, so pulls and pushes
 between machines touch disjoint files and never conflict.
