@@ -199,17 +199,47 @@ machine is not served, and nothing is built for that case.
 
 ## Command surface
 
+`tt help` prints this list.
+
+**Record**
+
+```
+tt add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']
+tt solo [PATH]
+tt paired [PATH]
+```
+
+`add` records time away from any agent. Duration is `90m`, `1.5h`, `2h30m` or a
+bare number of minutes. `--at` sets the start, and the duration runs forward
+from it. A note longer than one word must be quoted.
+
+`solo` and `paired` say whether the agent started in `PATH` is working without
+you or alongside you. `PATH` defaults to the current directory, and `paired` is
+the default state.
+
+**Read**
+
+```
+tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
+tt sessions
+```
+
+`report` covers today unless given a period. `D` is `YYYY-MM-DD`. `--detail`
+breaks each project out by sub-directory. `sessions` lists every session
+directory whose mode has been set, and its mode.
+
+**Other machines**
+
+```
+tt sync pull HOST        fetch HOST's log into this machine's repo
+tt install-remote HOST   clone this tool onto HOST over SSH and name it
+```
+
+**Setup**
+
 ```
 tt init                          create ~/.timetrack
-tt hook                          append one beat from hook JSON on stdin
-tt add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']
-tt solo [PATH]                   mark the session started in PATH as solo
-tt paired [PATH]                 mark it as paired
-tt sessions                      list known session directories and modes
-tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
-tt sync pull HOST                fetch HOST's log into this machine's repo
-tt install-remote HOST           clone this tool onto HOST over SSH and name it
-tt hooks-snippet [claude|codex]  print hook configuration
+tt hooks-snippet [claude|codex]  print hook config for a hand-set-up machine
 ```
 
 `tt hook` is what the hooks call; you never run it by hand.

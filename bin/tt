@@ -514,16 +514,39 @@ cmd_help() {
   cat <<'USAGE'
 tt — per-project time tracking
 
-  tt init                          create ~/.timetrack
-  tt hook                          append one beat from hook JSON on stdin
-  tt add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']
-  tt solo [PATH]                   mark the session started in PATH as solo
-  tt paired [PATH]                 mark it as paired
-  tt sessions                      list known session directories and modes
-  tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
-  tt sync pull HOST                fetch HOST's log into this machine's repo
-  tt install-remote HOST           clone this tool onto HOST over SSH and name it
-  tt hooks-snippet [claude|codex]  print hook configuration
+Time with an agent is recorded automatically by harness hooks; these
+commands cover everything else.
+
+RECORD
+  add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']
+      Time away from any agent. Duration is 90m, 1.5h, 2h30m or bare
+      minutes. --at sets the start and the duration runs forward from it.
+      Quote a note longer than one word.
+  solo [PATH]        the agent started in PATH is working without you
+  paired [PATH]      it is working alongside you — the default
+
+READ
+  report [today|week|month] [--since D] [--until D]
+         [--by project|day] [--detail]
+      Time per project, covering today unless given a period. D is
+      YYYY-MM-DD. --detail breaks each project out by sub-directory.
+  sessions           session directories whose mode is set, and their modes
+
+OTHER MACHINES
+  sync pull HOST         fetch HOST's log into this machine's repo
+  install-remote HOST    clone this tool onto HOST over SSH and name it
+
+SETUP
+  init                          create ~/.timetrack
+  hooks-snippet [claude|codex]  print hook config for a hand-set-up machine
+
+EXAMPLES
+  tt add sportx 90m "architecture review"
+  tt add tuurny 2h --at '2026-09-01 14:00'
+  tt solo                     # heading out; the agent keeps working
+  tt report week --detail
+
+PATH defaults to the current directory. Harnesses call `tt hook`; you don't.
 USAGE
 }
 
