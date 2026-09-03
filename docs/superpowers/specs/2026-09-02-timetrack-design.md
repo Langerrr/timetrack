@@ -65,7 +65,10 @@ spans, and marks time that involved no agent.
 
 Mode is held per session directory, in `~/.timetrack/modes`: one
 `mode<TAB>absolute-path` line per directory, matched on the exact path and
-rewritten whole when a mode is set. A directory with no line reads as `paired`.
+rewritten whole under a lock when a mode is set. A directory with no line reads
+as `paired`. A path holding a TAB or a newline is refused, because those are the
+file's own field and row separators; reading such a path returns `paired`, so
+the hook path can never fail on one.
 
     tt solo [path]      # path defaults to $PWD, resolved absolute
     tt paired [path]
