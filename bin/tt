@@ -1,0 +1,555 @@
+#!/bin/sh
+# tt — per-project time tracking across machines and agent harnesses.
+set -u
+
+TT_HOME=${TT_HOME:-$HOME/.timetrack}
+TT_ROOT=${TT_ROOT:-$HOME/workspace}
+TT_IDLE_GAP=${TT_IDLE_GAP:-900}
+
+tt_die() { printf 'tt: %s\n' "$1" >&2; exit 1; }
+
+# Config is a flat key=value file. Values already in the environment win.
+tt_config() { # key
+  [ -f "$TT_HOME/config" ] || return 1
+  sed -n 's/^'"$1"'=\(.*\)$/\1/p' "$TT_HOME/config" | head -1
+}
+
+tt_home() { printf '%s\n' "$TT_HOME"; }
+
+tt_root() {
+  v=$(tt_config TT_ROOT) || v=''
+  [ -n "${v:-}" ] && [ "$TT_ROOT" = "$HOME/workspace" ] && TT_ROOT=$v
+  # Attribution matches "$root"/* against a path already normalised by tt_abs,
+  # so a root written with a trailing or doubled slash would match nothing and
+  # book every project to ~outside. One character in a config file otherwise
+  # costs the whole log its attribution.
+  TT_ROOT=$(printf '%s' "$TT_ROOT" | sed 's://*:/:g; s:/*$::')
+  [ -n "$TT_ROOT" ] || TT_ROOT=/
+  printf '%s\n' "$TT_ROOT"
+}
+
+tt_now() { printf '%s\n' "${TT_NOW:-$(date +%s)}"; }
+
+tt_machine() {
+  v=$(tt_config machine) || v=''
+  if [ -n "${v:-}" ]; then printf '%s\n' "$v"
+  else hostname 2>/dev/null | sed 's/\..*//' | tr -c 'A-Za-z0-9-' '-' | sed 's/-*$//'
+  fi
+}
+
+# BSD date first, GNU second. Both are tried; whichever parses wins.
+tt_iso() { # epoch
+  date -r "$1" +'%Y-%m-%dT%H:%M:%S%z' 2>/dev/null \
+    || date -d "@$1" +'%Y-%m-%dT%H:%M:%S%z' 2>/dev/null \
+    || tt_die "cannot format epoch $1"
+}
+
+tt_epoch() { # 'YYYY-MM-DD HH:MM'
+  date -j -f '%Y-%m-%d %H:%M' "$1" +%s 2>/dev/null \
+    || date -d "$1" +%s 2>/dev/null \
+    || tt_die "cannot parse time: $1"
+}
+
+tt_fmt() { # epoch format
+  date -r "$1" +"$2" 2>/dev/null || date -d "@$1" +"$2" 2>/dev/null \
+    || tt_die "cannot format epoch $1"
+}
+
+tt_log_file() { printf '%s/events-%s.tsv\n' "$TT_HOME" "$(tt_machine)"; }
+
+# Absolute path without requiring realpath, which macOS lacks by default.
+tt_abs() { # path
+  d=$1
+  [ -d "$d" ] && { (cd "$d" 2>/dev/null && pwd) && return 0; }
+  case "$d" in
+    /*) printf '%s\n' "$d" | sed 's://*:/:g; s:/$::' ;;
+    *)  printf '%s\n' "$PWD/$d" | sed 's://*:/:g; s:/$::' ;;
+  esac
+}
+
+# Resolves $0 through any symlinks without readlink -f, which macOS lacks.
+tt_self() {
+  s=$0
+  while [ -L "$s" ]; do
+    d=$(cd "$(dirname "$s")" && pwd)
+    l=$(readlink "$s")
+    case "$l" in /*) s=$l ;; *) s="$d/$l" ;; esac
+  done
+  (cd "$(dirname "$s")" && pwd)
+}
+
+tt_attribute() { # abs-path -> project<TAB>subpath
+  p=$(tt_abs "$1")
+  r=$(tt_root)
+  if [ "$p" = "$r" ]; then printf '~root\t.\n'; return; fi
+  case "$p" in
+    "$r"/*)
+      rest=${p#"$r"/}
+      proj=${rest%%/*}
+      sub=${rest#"$proj"}
+      sub=${sub#/}
+      [ -n "$sub" ] || sub='.'
+      printf '%s\t%s\n' "$proj" "$sub" ;;
+    *) printf '~outside\t%s\n' "$p" ;;
+  esac
+}
+
+# Every mode lives in one file, as mode<TAB>abspath lines matched on the exact
+# path. A path encoded into a file name cannot be matched back to one directory:
+# tr maps both / and _ to the same character, so /x/y and /x_y name one file and
+# two unrelated projects would share a mode.
+tt_modes_file() { printf '%s/modes\n' "$TT_HOME"; }
+
+tt_mode() { # abs-path -> paired|solo
+  p=$(tt_abs "$1")
+  f=$(tt_modes_file)
+  [ -f "$f" ] || { printf 'paired\n'; return; }
+  m=$(TT_MODE_PATH=$p awk -F '\t' '
+    BEGIN { p = ENVIRON["TT_MODE_PATH"] }
+    $2 == p { v = $1 }
+    END { if (v != "") print v }
+  ' "$f")
+  [ -n "${m:-}" ] || m=paired
+  printf '%s\n' "$m"
+}
+
+# mkdir either creates the directory or fails, atomically, on every POSIX
+# filesystem -- and unlike flock it exists on macOS. Held only across the
+# read-modify-write below, which is one awk and one mv, so contention clears in
+# milliseconds. Each retry is itself a fork, which paces the spin; only a lock
+# held far longer than any real write reaches the sleep, and a lock left behind
+# by a killed process is refused rather than waited on forever.
+tt_lock_dir() { printf '%s/modes.lock\n' "$TT_HOME"; }
+
+tt_lock() {
+  d=$(tt_lock_dir)
+  i=0
+  while ! mkdir "$d" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -lt 200 ] || sleep 1
+    [ "$i" -lt 210 ] || return 1
+  done
+  return 0
+}
+
+tt_unlock() { rmdir "$(tt_lock_dir)" 2>/dev/null || :; }
+
+tt_set_mode() { # mode [path]
+  m=$1
+  p=$(tt_abs "${2:-$PWD}")
+  # The modes file separates its two fields with a TAB and its rows with a
+  # newline, so a path holding either cannot be stored and read back as itself.
+  # Refusing it costs two comparisons; an escaping scheme would cost a format.
+  tab=$(printf '\t')
+  nl=$(printf '\nx'); nl=${nl%x}
+  case "$p" in
+    *"$tab"*) tt_die "cannot record a path containing a tab: $p" ;;
+    *"$nl"*)  tt_die "cannot record a path containing a newline: $p" ;;
+  esac
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  tt_lock || tt_die "timed out waiting for $(tt_lock_dir); if no other tt is running, remove it"
+  trap 'tt_unlock' EXIT HUP INT TERM
+  f=$(tt_modes_file)
+  if [ -f "$f" ]; then src=$f; else src=/dev/null; fi
+  # Rewritten whole into a temporary file and moved into place, so a reader
+  # racing this sees either the old file or the new one, never half of either.
+  t="$f.$$"
+  if TT_MODE=$m TT_MODE_PATH=$p awk -F '\t' '
+    BEGIN { m = ENVIRON["TT_MODE"]; p = ENVIRON["TT_MODE_PATH"] }
+    $2 == p {
+      if (!seen) { printf "%s\t%s\n", m, p; seen = 1 }
+      next
+    }
+    NF >= 2 { print }
+    END { if (!seen) printf "%s\t%s\n", m, p }
+  ' "$src" > "$t"
+  then
+    mv "$t" "$f" || { rm -f "$t"; tt_die "cannot write $f"; }
+  else
+    rm -f "$t"; tt_die "cannot write $f"
+  fi
+  tt_unlock
+  trap - EXIT HUP INT TERM
+  printf '%s: %s\n' "$m" "$p"
+}
+
+# Extracts a top-level JSON string field. A hook payload embeds the whole tool
+# input, which can carry its own "cwd" key, and paths can hold commas, colons,
+# braces and escaped quotes -- so this scans the text rather than matching it,
+# tracking string state and nesting depth, and only accepts a key at depth 1 of
+# the outermost object. Escapes are left as written; these fields are paths and
+# ids, and nothing downstream decodes them.
+tt_json_str() { # field json
+  printf '%s' "$2" | awk -v key="$1" '
+    { buf = buf $0 "\n" }
+    END {
+      n = length(buf)
+      depth = 0
+      i = 1
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == "{" || c == "[") { depth++; stack[depth] = c; i++; continue }
+        if (c == "}" || c == "]") { if (depth > 0) depth--; i++; continue }
+        if (c != "\"") { i++; continue }
+
+        # Walk the string token without copying it; j lands on its closing quote.
+        s = i + 1
+        j = s
+        while (j <= n) {
+          c = substr(buf, j, 1)
+          if (c == "\\") { j += 2; continue }
+          if (c == "\"") break
+          j++
+        }
+        i = j + 1
+
+        # A string is a key only when a colon follows it.
+        k = i
+        while (k <= n && index(" \t\n\r", substr(buf, k, 1)) > 0) k++
+        if (substr(buf, k, 1) != ":") continue
+        i = k + 1
+        if (depth != 1 || stack[1] != "{" || substr(buf, s, j - s) != key) continue
+
+        while (i <= n && index(" \t\n\r", substr(buf, i, 1)) > 0) i++
+        if (substr(buf, i, 1) != "\"") continue
+        s = i + 1
+        j = s
+        while (j <= n) {
+          c = substr(buf, j, 1)
+          if (c == "\\") { j += 2; continue }
+          if (c == "\"") break
+          j++
+        }
+        print substr(buf, s, j - s)
+        exit
+      }
+    }'
+}
+
+tt_clean() { # text
+  printf '%s' "$1" | tr '\t\n\r' '   ' | cut -c1-200
+}
+
+# Accepts 90m, 1.5h, 2h30m, or a bare number read as minutes.
+tt_seconds() { # duration
+  printf '%s' "$1" | awk '
+    {
+      s = tolower($0)
+      if (s ~ /^[0-9]+(\.[0-9]+)?$/) { printf "%d\n", s * 60; exit 0 }
+      total = 0; matched = 0
+      while (match(s, /^[0-9]+(\.[0-9]+)?[hm]/)) {
+        piece = substr(s, 1, RLENGTH)
+        unit  = substr(piece, RLENGTH, 1)
+        value = substr(piece, 1, RLENGTH - 1) + 0
+        total += (unit == "h") ? value * 3600 : value * 60
+        s = substr(s, RLENGTH + 1)
+        matched = 1
+      }
+      if (matched && s == "") { printf "%d\n", total; exit 0 }
+      exit 1
+    }'
+}
+
+cmd_add() {
+  [ $# -ge 2 ] || tt_die "usage: tt add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']"
+  proj=$1; dur=$2; shift 2
+  note='-'; at=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --at) [ $# -ge 2 ] || tt_die "--at needs a 'YYYY-MM-DD HH:MM' argument"; at=$2; shift 2 ;;
+      *)    note=$1; shift ;;
+    esac
+  done
+
+  # An unparseable duration leaves awk silent, whatever it exits with.
+  secs=$(tt_seconds "$dur")
+  case "$secs" in
+    ''|*[!0-9]*) tt_die "cannot parse duration: $dur" ;;
+  esac
+
+  if [ -n "$at" ]; then start=$(tt_epoch "$at") || exit 1; end=$((start + secs))
+  else end=$(tt_now); start=$((end - secs))
+  fi
+
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  row=$(printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\t%s\t.\t-\t%s' \
+    "$(tt_iso "$start")" "$start" "$end" "$(tt_machine)" \
+    "$(tt_clean "$proj")" "$(tt_clean "$note")")
+  printf '%s\n' "$row" >> "$(tt_log_file)"
+  printf '%s\n' "$row"
+}
+
+cmd_hook() {
+  input=$(cat 2>/dev/null) || input=''
+
+  cwd=$(tt_json_str cwd "$input")
+  [ -n "$cwd" ] || cwd=$PWD
+  sid=$(tt_json_str session_id "$input")
+  [ -n "$sid" ] || sid='-'
+  evt=$(tt_json_str hook_event_name "$input")
+  [ -n "$evt" ] || evt='-'
+
+  # Codex sets CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA next to its own
+  # PLUGIN_ROOT and PLUGIN_DATA, so a hook it runs answers to both names.
+  # Only Codex sets the unprefixed pair, so that is read first. CODEX_HOME is
+  # not consulted: a user may export it from a login shell, and a hook inherits
+  # the login environment, which would book every Claude beat as Codex.
+  if [ -n "${PLUGIN_ROOT:-}" ]; then harness=codex
+  elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || [ -n "${CLAUDECODE:-}" ]; then harness=claude
+  else harness='-'
+  fi
+
+  now=$(tt_now)
+  attrib=$(tt_attribute "$cwd")
+  proj=$(printf '%s' "$attrib" | cut -f1)
+  sub=$(printf '%s' "$attrib" | cut -f2)
+  mode=$(tt_mode "$cwd")
+
+  mkdir -p "$TT_HOME" 2>/dev/null
+  printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
+    "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
+    >> "$(tt_log_file)" 2>/dev/null
+  return 0
+}
+
+# The first instant of a local day. Nothing here parses a midnight, because a
+# spring-forward landing on 00:00 deletes it -- Santiago, Havana and Tehran all
+# do this, and the date has no local 00:00 to parse. Subtracting the wall-clock
+# time of day instead lands within one DST shift of the true start (exactly on
+# it when the day holds no transition), and the day boundary is walked to from
+# there. The walk terminates: the estimate is never later than the given epoch,
+# so it sits on the wanted day or on an earlier one.
+tt_midnight() { # epoch -> epoch of that local day's first instant
+  day=$(tt_fmt "$1" '%Y-%m-%d') || exit 1
+  hms=$(tt_fmt "$1" '%H %M %S') || exit 1
+  set -- "$1" $hms
+  # %H, %M and %S are zero-padded, and POSIX arithmetic reads a leading zero
+  # as octal, so 08 and 09 would be errors. Strip it.
+  e=$(( $1 - ${2#0} * 3600 - ${3#0} * 60 - ${4#0} ))
+  while [ "$(tt_fmt "$e" '%Y-%m-%d')" != "$day" ]; do e=$((e + 900)); done
+  while [ "$(tt_fmt "$((e - 900))" '%Y-%m-%d')" = "$day" ]; do e=$((e - 900)); done
+  printf '%s\n' "$e"
+}
+
+cmd_report() {
+  now=$(tt_now)
+  since=''; upto=$now; byday=0; detail=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      today)    since=$(tt_midnight "$now") || exit 1; shift ;;
+      # Subtracting whole days can land on 23:00 or 01:00 across a DST change,
+      # so the result is put back through tt_midnight to reach that day's 00:00.
+      week)     mid=$(tt_midnight "$now") || exit 1
+                u=$(tt_fmt "$now" '%u') || exit 1
+                since=$(tt_midnight "$((mid - (u - 1) * 86400))") || exit 1
+                shift ;;
+      month)    ym=$(tt_fmt "$now" '%Y-%m') || exit 1
+                since=$(tt_epoch "$ym-01 00:00") || exit 1; shift ;;
+      --since)  [ $# -ge 2 ] || tt_die "--since needs a YYYY-MM-DD argument"
+                since=$(tt_epoch "$2 00:00") || exit 1; shift 2 ;;
+      --until)  [ $# -ge 2 ] || tt_die "--until needs a YYYY-MM-DD argument"
+                upto=$(tt_epoch "$2 23:59") || exit 1; shift 2 ;;
+      --by)     [ $# -ge 2 ] || tt_die "--by needs project or day"
+                [ "$2" = day ] && byday=1; shift 2 ;;
+      --detail) detail=1; shift ;;
+      *)        tt_die "unknown report option: $1" ;;
+    esac
+  done
+  [ -n "$since" ] || since=$(tt_midnight "$now") || exit 1
+
+  gap=$(tt_config TT_IDLE_GAP) || gap=''
+  [ -n "${gap:-}" ] || gap=$TT_IDLE_GAP
+  lib=${TT_LIB:-$(tt_self)/../lib}
+
+  # The interval walk diffs each beat against the one before it, so the stream
+  # has to arrive ascending by start. Hooks fire per tool call, tool calls can
+  # run in parallel, and each hook stamps its own time before racing to append,
+  # so the log itself is not ordered. sort does this in one pass; sorting inside
+  # awk would be quadratic over a log that grows to hundreds of thousands of rows.
+  tab=$(printf '\t')
+  cat "$TT_HOME"/events-*.tsv 2>/dev/null \
+    | sort -t "$tab" -k 3,3n \
+    | awk -v since="$since" -v upto="$upto" -v gap="$gap" \
+          -v byday="$byday" -v detail="$detail" -f "$lib/report.awk"
+}
+
+cmd_init() {
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n' > "$TT_HOME/config"
+  f=$(tt_log_file); [ -f "$f" ] || : > "$f"
+  f=$(tt_modes_file); [ -f "$f" ] || : > "$f"
+  printf 'initialised %s (machine: %s)\n' "$TT_HOME" "$(tt_machine)"
+}
+
+cmd_sessions() {
+  f=$(tt_modes_file)
+  [ -f "$f" ] || return 0
+  awk -F '\t' 'NF >= 2 { printf "%-7s %s\n", $1, $2 }' "$f"
+}
+
+# Both remote commands hand this string to a shell running on the far side --
+# rsync expands a remote path there, and install-remote runs a script there --
+# so a host name is held to what a host name is made of. Refusing an odd one is
+# shorter than quoting it correctly through two shells, and a leading hyphen
+# would otherwise be read by ssh as an option rather than a destination.
+tt_host_ok() { # [user@]host
+  case "$1" in
+    ''|-*|@*|*@|*@*@*)  return 1 ;;
+    *[!A-Za-z0-9._@-]*) return 1 ;;
+  esac
+  return 0
+}
+
+tt_bad_host() { # host
+  tt_die "not a usable host name: $1 (expected [user@]host of letters, digits, dots, hyphens and underscores)"
+}
+
+cmd_sync() {
+  [ "${1:-}" = pull ] || tt_die "usage: tt sync pull HOST"
+  shift
+  host=${1:-}
+  [ -n "$host" ] || tt_die "usage: tt sync pull HOST"
+  tt_host_ok "$host" || tt_bad_host "$host"
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  # The whole file is replaced, so repeating a pull changes nothing.
+  ${TT_RSYNC:-rsync} -a "$host:.timetrack/events-$host.tsv" "$TT_HOME/events-$host.tsv"
+  st=$?
+  # ssh reports its own failures as 255 and rsync passes that through, so a
+  # connection problem and a problem at the other end are told apart here
+  # rather than both being reported as an unreachable host.
+  case $st in
+    0)   ;;
+    255) tt_die "could not reach $host" ;;
+    *)   tt_die "reached $host, but events-$host.tsv did not copy (rsync exit $st); check that ~/.timetrack/config on $host says machine=$host" ;;
+  esac
+  printf 'pulled events-%s.tsv\n' "$host"
+}
+
+cmd_install_remote() {
+  host=${1:-}
+  [ -n "$host" ] || tt_die "usage: tt install-remote HOST"
+  tt_host_ok "$host" || tt_bad_host "$host"
+  # The remote fetches the tool itself: the repository is public, so its clone is
+  # anonymous and touches no account, and the only fact that travels from here
+  # is the name this machine is logged under. The same command provisions a new
+  # host and updates one already installed.
+  #
+  # The config is rewritten whole by awk rather than patched by sed, so a file
+  # whose last line was hand-edited without a trailing newline gains one instead
+  # of having the next key run onto the end of it. The rewrite is tested
+  # explicitly rather than joined to the mv with &&: set -e exempts a command
+  # that precedes &&, so a failed rewrite would fall through to tt init and the
+  # whole install would exit 0 without ever naming the machine.
+  remote=$(cat <<EOF
+set -e
+d=\$HOME/timetrack-plugin
+if [ -d "\$d/.git" ]; then git -C "\$d" pull --ff-only
+else git clone https://github.com/Langerrr/timetrack.git "\$d"
+fi
+mkdir -p "\$HOME/.timetrack"
+c=\$HOME/.timetrack/config
+[ -f "\$c" ] || : > "\$c"
+if ! awk -v m='machine=$host' '
+  /^machine=/ { print m; seen = 1; next }
+  { print }
+  END { if (!seen) print m }
+' "\$c" > "\$c.new"; then
+  rm -f "\$c.new"
+  echo "tt: could not write machine=$host into \$c" >&2
+  exit 1
+fi
+mv "\$c.new" "\$c"
+sh "\$d/bin/tt" init
+EOF
+)
+  ${TT_SSH:-ssh} "$host" "$remote"
+  st=$?
+  case $st in
+    0)   ;;
+    255) tt_die "could not reach $host" ;;
+    *)   tt_die "reached $host, but the setup did not finish (exit $st); check that git on $host can clone from github.com" ;;
+  esac
+  cat <<EOF
+
+$host now has ~/timetrack-plugin and machine=$host in ~/.timetrack/config, so
+its log is events-$host.tsv and 'tt sync pull $host' finds it.
+
+The clone carries its own marketplace manifest, so it registers as the
+marketplace 'timetrack' holding the plugin 'timetrack'. Both harnesses want the
+plugin named with its marketplace; a bare name is refused.
+
+Register it on $host, in each harness you use there:
+  claude: /plugin marketplace add ~/timetrack-plugin
+          /plugin install timetrack@timetrack
+  codex:  codex plugin marketplace add ~/timetrack-plugin
+          codex plugin add timetrack@timetrack
+
+Codex skips a plugin's hooks until they are trusted, and says nothing when it
+does, so start one interactive session on $host and accept the hook prompt.
+
+$host clones the published repository, so push anything you want it to have
+before running this. Running it again pulls in place.
+
+$host keeps no credentials: the clone is anonymous and nothing is pushed from
+it. Pull its log from a trusted machine with:
+  tt sync pull $host
+EOF
+}
+
+cmd_hooks_snippet() {
+  cmd='sh -c '"'"'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt" hook'"'"''
+  case "${1:-claude}" in
+    claude) printf 'Add to ~/.claude/settings.json under "hooks":\n\n' ;;
+    codex)  printf 'Add to ~/.codex/config.toml under [hooks], or ship hooks/hooks.json:\n\n' ;;
+    *)      tt_die "usage: tt hooks-snippet [claude|codex]" ;;
+  esac
+  for evt in SessionStart UserPromptSubmit PreToolUse PostToolUse Stop; do
+    printf '  %s -> %s\n' "$evt" "$cmd"
+  done
+  printf '\nWhen no plugin root is exported, replace it with the absolute path to bin/tt.\n'
+}
+
+cmd_help() {
+  cat <<'USAGE'
+tt — per-project time tracking
+
+  tt init                          create ~/.timetrack
+  tt hook                          append one beat from hook JSON on stdin
+  tt add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']
+  tt solo [PATH]                   mark the session started in PATH as solo
+  tt paired [PATH]                 mark it as paired
+  tt sessions                      list known session directories and modes
+  tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
+  tt sync pull HOST                fetch HOST's log into this machine's repo
+  tt install-remote HOST           clone this tool onto HOST over SSH and name it
+  tt hooks-snippet [claude|codex]  print hook configuration
+USAGE
+}
+
+sub=${1:-help}
+[ $# -gt 0 ] && shift
+case "$sub" in
+  init)          cmd_init "$@" ;;
+  hook)          cmd_hook || true; exit 0 ;;
+  add)           cmd_add "$@" ;;
+  help|-h|--help) cmd_help ;;
+  solo)          tt_set_mode solo "${1:-$PWD}" ;;
+  paired)        tt_set_mode paired "${1:-$PWD}" ;;
+  sessions)      cmd_sessions ;;
+  report)        cmd_report "$@" ;;
+  sync)          cmd_sync "$@" ;;
+  install-remote) cmd_install_remote "$@" ;;
+  hooks-snippet)  cmd_hooks_snippet "$@" ;;
+  debug-home)    tt_home ;;
+  debug-root)    tt_root ;;
+  debug-now)     tt_now ;;
+  debug-machine) tt_machine ;;
+  debug-seconds) tt_seconds "$1" || exit 1 ;;
+  debug-epoch)   tt_epoch "$1" ;;
+  debug-iso)     tt_iso "$1" ;;
+  debug-midnight) tt_midnight "$(tt_now)" ;;
+  debug-attribute) tt_attribute "$1" ;;
+  debug-mode)    tt_mode "$1" ;;
+  *)             printf 'tt: unknown subcommand: %s\n' "$sub" >&2; exit 2 ;;
+esac

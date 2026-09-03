@@ -1,0 +1,23 @@
+{
+  "name": "timetrack",
+  "version": "0.1.0",
+  "description": "Per-project time tracking across machines and agent harnesses, separating paired, solo and manual time.",
+  "author": { "name": "lan" },
+  "repository": "https://github.com/Langerrr/timetrack",
+  "license": "MIT",
+  "keywords": ["time", "tracking", "productivity"],
+  "interface": {
+    "displayName": "timetrack",
+    "shortDescription": "Per-project time tracking across machines and harnesses.",
+    "longDescription": "timetrack records how much time goes into each project, keeping time worked alongside an agent apart from time an agent worked alone and time spent away from any agent.",
+    "developerName": "lan",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "Shell"],
+    "defaultPrompt": [
+      "Log two hours on sportx for the architecture review.",
+      "How much time did I spend on sportx this month?",
+      "I'm heading out, let it run solo."
+    ],
+    "brandColor": "#10A37F"
+  }
+}

@@ -63,12 +63,16 @@ to where it started.
 `paired` and `solo` are set by hand and apply to agent time. `manual` belongs to
 spans, and marks time that involved no agent.
 
-Mode is held per session directory, in `~/.timetrack/mode/<key>`, where `<key>`
-encodes the absolute path. A missing file reads as `paired`.
+Mode is held per session directory, in `~/.timetrack/modes`: one
+`mode<TAB>absolute-path` line per directory, matched on the exact path and
+rewritten whole under a lock when a mode is set. A directory with no line reads
+as `paired`. A path holding a TAB or a newline is refused, because those are the
+file's own field and row separators; reading such a path returns `paired`, so
+the hook path can never fail on one.
 
     tt solo [path]      # path defaults to $PWD, resolved absolute
     tt paired [path]
-    tt sessions         # recently active session directories and their modes
+    tt sessions         # every session directory whose mode was set, and its mode
 
 Two agents started in different directories hold independent modes, so a solo
 run in one repository and paired work in another record correctly at the same
@@ -94,7 +98,7 @@ Spans contribute `end - start`.
     ~/.timetrack/
       config              # machine=, TT_ROOT=, TT_IDLE_GAP=
       events-<machine>.tsv
-      mode/
+      modes               # mode<TAB>absolute-path per session directory
 
 A private git repository. Each machine appends only to its own file, so pulls
 and pushes touch disjoint paths.
