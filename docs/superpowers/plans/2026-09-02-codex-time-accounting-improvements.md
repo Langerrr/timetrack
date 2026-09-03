@@ -1,9 +1,10 @@
 # Codex Time Tracking Improvement Plan
 
-**Status:** Implemented and verified on Linux on 2026-09-02. The automated
-suite, skill validation, Claude manifest validation, and a temporary Codex
-plugin installation pass. A macOS run and an interactive Codex hook-trust smoke
-test remain environment-dependent follow-up checks.
+**Status:** Implemented and reverified on Linux on 2026-09-03 after adding the
+Codex compaction-continuation case. The automated suite, skill validation,
+Claude manifest validation, and a temporary Codex plugin installation pass. A
+macOS run and an interactive Codex hook-trust smoke test remain
+environment-dependent follow-up checks.
 
 **Goal:** Keep timetrack's append-only, dependency-free design while making its
 reported time match Codex's actual turn and tool lifecycle, preserving correct
@@ -134,6 +135,7 @@ rows:
 | 14 | `agent_id` | Codex subagent identifier, or `-` |
 | 15 | `agent_type` | Codex subagent type/profile, or `-` |
 | 16 | `assistant_words` | Word count of `last_assistant_message` on `Stop`, or `-` |
+| 17 | `session_source` | `SessionStart` source, or `-` |
 
 Manual spans may remain eleven columns or write `-` in all extension columns;
 the implementation should choose one canonical output and test both readers.
@@ -181,8 +183,9 @@ must never be written to the event log.
 `.codex-plugin/plugin.json`, tests.
 
 - Extend the top-level JSON string reader usage to capture `turn_id`,
-  `tool_use_id`, `agent_id`, and `agent_type` when present. On `Stop`, count the
-  words in `last_assistant_message` without persisting the message itself.
+  `tool_use_id`, `agent_id`, `agent_type`, and the `SessionStart` source when
+  present. On `Stop`, count the words in `last_assistant_message` without
+  persisting the message itself.
 - Append the optional fields without altering the meaning or order of the first
   eleven columns.
 - Preserve the current single-append write and field-cleaning limits.
@@ -217,6 +220,8 @@ must never be written to the event log.
   already sit inside a complete turn.
 - Use `SessionEnd` as a final closing boundary when appropriate. Preserve the
   crash-safe rule that an unmatched final start does not extend to report time.
+- Treat Codex `SessionStart(source=compact)` as a continuation of the current
+  turn; other session-start sources reset stale lifecycle state.
 - Treat subagent activity as part of its parent turn. Use `agent_id` only to
   recover its observed boundaries, not to add overlapping agent-hours.
 - Retain the beat-gap heuristic for legacy rows and genuinely unknown intervals,
@@ -319,7 +324,7 @@ exposes no focus, scroll, or typing-start event:
 - The complete shell test suite passes, including legacy/mixed log formats,
   lifecycle reconstruction, same-second ordering, range clipping, solo return,
   reading estimates, the bundled skill wrapper, and hook failure containment.
-- The current Codex CLI accepts and installs the version 0.2.0 manifest with its
+- The current Codex CLI accepts and installs the version 0.3.1 manifest with its
   explicit `hooks/codex-hooks.json` path in a temporary Codex home.
 - The skill validator and Claude plugin validator pass. The older standalone
   plugin validator bundled with the local plugin-creation tooling rejects the

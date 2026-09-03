@@ -51,6 +51,7 @@ remain stable:
 | 14 | `agent_id` | Subagent identifier, or `-` |
 | 15 | `agent_type` | Subagent type or profile, or `-` |
 | 16 | `assistant_words` | Final assistant-message word count on `Stop`, or `-` |
+| 17 | `session_source` | `SessionStart` source, or `-` |
 
 Manual spans may remain eleven columns. Reports accept old, extended and mixed
 logs without migration. Raw assistant-message content is never persisted.
@@ -122,16 +123,18 @@ recovery evidence when a main-turn boundary is absent. Subagent activity shares
 the parent stream and is not added again when it overlaps the parent turn.
 
 Because known activity ignores `TT_IDLE_GAP`, an ending that was never recorded
-would otherwise credit the whole absence that follows it, and no harness
+would otherwise count the whole absence that follows it, and no harness
 guarantees an event for every ending — Claude Code records nothing when the user
 interrupts. Three rules bound this. A single gap inside an open turn, tool call
-or subagent run credits at most `TT_MAX_ACTIVE_GAP` (3600 seconds by default),
+or subagent run counts at most `TT_MAX_ACTIVE_GAP` (3600 seconds by default),
 counted forward from the beat that proved the activity, so a genuinely long tool
 call keeps that much of its length rather than being discarded; `0` removes the
 ceiling. A `UserPromptSubmit` carrying a turn identifier other than the one
 still open closes that turn, because a new prompt proves the previous one ended.
-A `SessionStart` arriving mid-stream closes everything open, because a resumed
-session keeps its id and rejoins its own stream.
+A `SessionStart` arriving mid-stream closes everything open when its source is
+`startup`, `resume`, or `clear`, because a resumed session keeps its id and
+rejoins its own stream. Codex also emits `SessionStart` with `source=compact`
+during an active turn; that continuation preserves the open lifecycle state.
 
 For legacy and incomplete rows, two consecutive beats no more than
 `TT_IDLE_GAP` apart (default 900 seconds) contribute their difference, assigned

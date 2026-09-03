@@ -16,7 +16,7 @@ export TT_HOME TT_ROOT
 
 # Harness detection is asserted below, so the ambient harness must not leak in.
 unset CLAUDECODE CLAUDE_PLUGIN_ROOT PLUGIN_ROOT CODEX_HOME
-unset TT_READING_WPM TT_MAX_READING_TIME
+unset TT_READING_WPM TT_MAX_READING_TIME TT_MAX_ACTIVE_GAP
 
 printf 'Task 1: skeleton\n'
 assert_status 2 'unknown subcommand exits 2' -- sh "$TT" nonsense
@@ -145,11 +145,17 @@ assert_eq 'a\"b' "$(cut -f9 < "$LOG")" 'an escaped quote in cwd does not truncat
 : > "$LOG"
 EXTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"SubagentStart","turn_id":"turn-7","tool_use_id":"tool-8","agent_id":"agent-9","agent_type":"worker"}'
 printf '%s' "$EXTJSON" | TT_NOW=1900000006 PLUGIN_ROOT=/p sh "$TT" hook
-assert_eq "16" "$(awk -F '\t' '{ print NF }' "$LOG")" 'new beats append five lifecycle fields'
+assert_eq "17" "$(awk -F '\t' '{ print NF }' "$LOG")" 'new beats append six lifecycle fields'
 assert_eq "turn-7" "$(cut -f12 < "$LOG")" 'turn id captured'
 assert_eq "tool-8" "$(cut -f13 < "$LOG")" 'tool id captured'
 assert_eq "agent-9" "$(cut -f14 < "$LOG")" 'subagent id captured'
 assert_eq "worker" "$(cut -f15 < "$LOG")" 'subagent type captured'
+assert_eq "-" "$(cut -f17 < "$LOG")" 'an unrelated event has no session-start source'
+
+: > "$LOG"
+STARTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"SessionStart","source":"compact"}'
+printf '%s' "$STARTJSON" | TT_NOW=1900000010 PLUGIN_ROOT=/p sh "$TT" hook
+assert_eq "compact" "$(cut -f17 < "$LOG")" 'a Codex SessionStart source is captured'
 
 : > "$LOG"
 PROMPTIDJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse","prompt_id":"prompt-9","tool_use_id":"tool-9"}'
@@ -229,10 +235,10 @@ beat() { # epoch mode project subpath session
     "$(sh "$TT" debug-iso "$1")" "$1" "$1" "$M" "$2" "$3" "$4" "$5" >> "$LOG"
 }
 
-beatx() { # epoch mode project subpath session event turn tool agent agent_type words
-  printf '%s\tbeat\t%s\t%s\t%s\tcodex\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+beatx() { # epoch mode project subpath session event turn tool agent agent_type words [session_source]
+  printf '%s\tbeat\t%s\t%s\t%s\tcodex\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(sh "$TT" debug-iso "$1")" "$1" "$1" "$M" "$2" "$3" "$4" "$5" \
-    "$6" "$7" "$8" "$9" "${10}" "${11}" >> "$LOG"
+    "$6" "$7" "$8" "$9" "${10}" "${11}" "${12:--}" >> "$LOG"
 }
 
 report_cell() { # row column-pair-number; reads a report on stdin
@@ -471,7 +477,7 @@ assert_eq "0h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'an unmatche
 # Every way a turn or a tool call can end, not just the way it ends when
 # nothing goes wrong. A terminal event the harness sends but the engine does
 # not recognise leaves activity proven, and proven activity ignores the idle
-# gap, so each of these would otherwise credit the whole following absence.
+# gap, so each of these would otherwise count the whole following absence.
 : > "$LOG"
 beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
 beatx 1900002000 paired sportx . s1 StopFailure turn-1 - - - -
@@ -508,7 +514,16 @@ beatx 1900000060 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
 beatx 1900079000 paired sportx . s1 SessionStart - - - - -
 beatx 1900079060 paired sportx . s1 Stop turn-2 - - - 1
 OUT=$(TT_MAX_ACTIVE_GAP=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'resuming a session does not bill the time it was not running'
+assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'resuming a session does not count the time it was not running'
+
+# Codex uses SessionStart with source=compact for a continuation inside the
+# current turn. It must not be mistaken for a resumed idle session.
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
+beatx 1900002000 paired sportx . s1 SessionStart - - - - - compact
+beatx 1900002060 paired sportx . s1 Stop turn-1 - - - 1
+OUT=$(TT_MAX_ACTIVE_GAP=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 34m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'Codex compaction preserves the active turn'
 
 # An interrupt records nothing, but the next prompt carries a different turn id,
 # and that is proof the earlier turn is over.
@@ -528,7 +543,7 @@ OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
 assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'rows without turn ids report unchanged'
 
 # No terminal event is guaranteed to arrive: Claude Code fires none on a user
-# interrupt. The ceiling bounds what an unclosed turn can credit.
+# interrupt. The ceiling bounds what an unclosed turn can count.
 : > "$LOG"
 beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
 beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1

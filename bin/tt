@@ -364,6 +364,8 @@ cmd_hook() {
   [ -n "$agent" ] || agent='-'
   agent_type=$(tt_json_str agent_type "$input")
   [ -n "$agent_type" ] || agent_type='-'
+  session_source=$(tt_json_str source "$input")
+  [ -n "$session_source" ] || session_source='-'
   words='-'
   if [ "$evt" = Stop ]; then
     message=$(tt_json_str last_assistant_message "$input")
@@ -398,11 +400,11 @@ cmd_hook() {
   fi
 
   mkdir -p "$TT_HOME" 2>/dev/null
-  printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
     "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
     "$(tt_clean "$turn")" "$(tt_clean "$tool")" "$(tt_clean "$agent")" \
-    "$(tt_clean "$agent_type")" "$words" \
+    "$(tt_clean "$agent_type")" "$words" "$(tt_clean "$session_source")" \
     >> "$(tt_log_file)" 2>/dev/null
   return 0
 }

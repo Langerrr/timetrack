@@ -25,10 +25,11 @@ start never extends to report time, so a killed terminal or crashed harness
 leaves nothing dangling.
 
 Not every ending gets recorded — Claude Code fires no hook when you interrupt —
-so a single gap inside an open turn or tool call credits at most
+so a single gap inside an open turn or tool call counts at most
 `TT_MAX_ACTIVE_GAP` (3600 seconds by default). A prompt carrying a new turn id
-closes the turn before it, and a `SessionStart` closes everything open, which is
-what keeps a resumed session from billing the hours it was not running.
+closes the turn before it. A `SessionStart` also closes everything open when a
+session starts, resumes, or clears; Codex's mid-turn `source=compact`
+continuation preserves the current turn.
 
 ### The three modes
 
@@ -338,7 +339,7 @@ iso_start  kind  start  end  machine  harness  mode  project  subpath  session  
 | 10 | `session` | Harness session id, or `-` |
 | 11 | `note` | On a `span`, your free-text note (`-` if none). On a `beat`, the hook event name. |
 
-New beat rows append five lifecycle fields:
+New beat rows append six lifecycle fields:
 
 | # | Column | Meaning |
 |---|---|---|
@@ -347,6 +348,7 @@ New beat rows append five lifecycle fields:
 | 14 | `agent_id` | Subagent identifier, or `-` |
 | 15 | `agent_type` | Subagent type or profile, or `-` |
 | 16 | `assistant_words` | Word count of the final message on `Stop`, or `-` |
+| 17 | `session_source` | `SessionStart` source such as `startup`, `resume`, `clear`, or `compact`; otherwise `-` |
 
 Column 11 carries different things by kind, and that is deliberate: a span's note
 is what you said about it, a beat's note is which hook produced it

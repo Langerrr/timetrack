@@ -104,16 +104,17 @@ $2 != "beat" { next }
   tool = (NF >= 13 ? id_value($13) : "*")
   agent = (NF >= 14 ? id_value($14) : "*")
   words = (NF >= 16 ? $16 : "-")
+  session_source = (NF >= 17 ? $17 : "-")
   stream = machine SUBSEP harness SUBSEP session SUBSEP project SUBSEP subpath
 
   queue_touch(project, subpath, at)
 
   # A resumed session keeps its id, and the id is part of the stream key, so a
-  # SessionStart can arrive mid-stream after a turn that no terminal event ever
-  # closed -- a crash, a killed terminal, an API error. Clearing here, before
-  # the interval below is measured, stops the reopened session from proving
-  # activity across the whole time the session was not running.
-  if (event == "SessionStart") {
+  # SessionStart can arrive after a turn that no terminal event ever closed.
+  # Codex also emits SessionStart with source=compact while the same turn is
+  # still running; that continuation must preserve the active lifecycle state.
+  if (event == "SessionStart" &&
+      !(harness == "codex" && session_source == "compact")) {
     active_turn[stream] = ""
     lifecycle_epoch[stream]++
     active_tools[stream] = 0
@@ -145,16 +146,16 @@ $2 != "beat" { next }
 
     # Activity proven by an open turn, tool or subagent counts regardless of
     # TT_IDLE_GAP, so the ceiling is what stops an event that never arrived from
-    # crediting unbounded time. Credit runs forward from the beat that proved
+    # counting unbounded time. Counting runs forward from the beat that proved
     # the activity, so a genuinely long tool call keeps the ceiling's worth of
     # it rather than being discarded whole.
-    credit_to = at
+    count_to = at
     if (proven && max_active > 0 && elapsed > max_active)
-      credit_to = previous_at[stream] + max_active
+      count_to = previous_at[stream] + max_active
 
     if (elapsed > 0 && (proven || inferred))
       queue_interval(previous_project[stream], previous_subpath[stream],
-                     previous_mode[stream], previous_at[stream], credit_to, 0)
+                     previous_mode[stream], previous_at[stream], count_to, 0)
   }
 
   # A reading estimate is created only when the very next event on this stream
@@ -180,7 +181,7 @@ $2 != "beat" { next }
     delete pending_subpath[stream]
   }
 
-  # Update lifecycle state after accounting for the interval ending at this
+  # Update lifecycle state after measuring the interval ending at this
   # event. Starts prove activity forward; matching terminal events close it at
   # their own timestamp.
   if (event == "UserPromptSubmit") {

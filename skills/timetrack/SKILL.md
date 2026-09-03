@@ -72,7 +72,8 @@ a disclosed subset and must not be added to `TOTAL` again.
 
 The log is a tab-separated file at `~/.timetrack/events-<machine>.tsv`. Manual
 `span` rows retain the original eleven columns. New `beat` rows append
-`turn_id, tool_use_id, agent_id, agent_type, assistant_words` as columns 12–16;
+`turn_id, tool_use_id, agent_id, agent_type, assistant_words, session_source`
+as columns 12–17;
 old eleven-column beats remain valid. Column 11 holds the user's note on a span
 and the hook event name (`SessionStart`, `PreToolUse`, …) on a beat, so never
 read it back as something the user wrote. `assistant_words` is a count; raw
