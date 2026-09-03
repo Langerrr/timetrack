@@ -709,6 +709,62 @@ TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report today >/dev/null
 assert_eq "$COMPACT_ONCE" "$(cat "$COMPACT")" 'a repeated same-day rollover does not rewrite totals'
 assert_eq "$CURRENT_ONCE" "$(cat "$LOG")" 'a repeated same-day rollover leaves detail unchanged'
 
+# A valid same-day marker must not prevent upgrade housekeeping from repairing
+# ignore rules left behind by an interrupted or partially installed upgrade.
+printf 'mode/\n' > "$TT_HOME/.gitignore"
+TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report today >/dev/null
+assert_contains "$(cat "$TT_HOME/.gitignore")" "current-*.tsv" 'a same-day report repairs the current-detail ignore rule'
+assert_contains "$(cat "$TT_HOME/.gitignore")" "events-*.lock/" 'a same-day report repairs the event-lock ignore rule'
+
+# A marker can coexist with raw rows if an older installed hook writes the old
+# file after migration. The marker is only a fast path when the compact file
+# actually contains compact rows exclusively.
+clear_logs
+DAY_START=$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:00')
+printf '2026-09-03\tcompact\t%s\t%s\t%s\t-\t-\t-\t-\t-\t-\n' \
+  "$DAY_START" "$DAY_START" "$M" > "$COMPACT"
+DETAIL_LOG=$LOG
+LOG=$COMPACT
+TZ=UTC beat "$TODAY_A" paired sportx . stale-writer
+TZ=UTC beat "$TODAY_B" paired sportx . stale-writer
+LOG=$DETAIL_LOG
+TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report today >/dev/null
+assert_eq "0" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$COMPACT")" 'same-day raw rows are removed from compact history'
+assert_eq "2" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$LOG")" 'same-day raw rows move to current detail'
+
+# Unknown rows must stop rollover before either source is replaced. This turns
+# an interrupted/mismatched deployment into a visible error instead of silently
+# dropping history that a later run can no longer reconstruct.
+clear_logs
+printf '2026-09-03\tcompact\t%s\t%s\t%s\t-\t-\t-\t-\t-\t-\n' \
+  "$DAY_START" "$DAY_START" "$M" > "$COMPACT"
+printf 'PROJECT      PAIRED      SOLO    MANUAL ESTIMATED     TOTAL\n' >> "$COMPACT"
+TZ=UTC beat "$TODAY_A" paired sportx . guarded-source
+COMPACT_BEFORE_INVALID=$(cat "$COMPACT")
+CURRENT_BEFORE_INVALID=$(cat "$LOG")
+assert_status 1 'an unknown stored row stops compaction' -- \
+  sh -c "TZ=UTC TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_NOW='$REPORT_NOW' TT_LIB='$TT_LIB' sh '$TT' report today"
+assert_eq "$COMPACT_BEFORE_INVALID" "$(cat "$COMPACT")" 'an unknown stored row leaves compact history unchanged'
+assert_eq "$CURRENT_BEFORE_INVALID" "$(cat "$LOG")" 'an unknown stored row leaves current detail unchanged'
+
+# A reporter that exits successfully can still be the wrong/incomplete version.
+# Validate its row protocol rather than treating exit zero as permission to move.
+clear_logs
+DETAIL_LOG=$LOG
+LOG=$COMPACT
+TZ=UTC beat "$PAST_A" paired sportx . malformed-output
+TZ=UTC beat "$PAST_B" paired sportx . malformed-output
+LOG=$DETAIL_LOG
+BAD_LIB="$SANDBOX/bad-lib"
+mkdir -p "$BAD_LIB"
+printf 'BEGIN { print "PROJECT      PAIRED      SOLO    MANUAL ESTIMATED     TOTAL" }\n' > "$BAD_LIB/report.awk"
+COMPACT_BEFORE_INVALID=$(cat "$COMPACT")
+CURRENT_BEFORE_INVALID=$(cat "$LOG")
+assert_status 1 'malformed successful reporter output stops compaction' -- \
+  sh -c "TZ=UTC TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_NOW='$REPORT_NOW' TT_LIB='$BAD_LIB' sh '$TT' report yesterday"
+assert_eq "$COMPACT_BEFORE_INVALID" "$(cat "$COMPACT")" 'malformed reporter output leaves compact history unchanged'
+assert_eq "$CURRENT_BEFORE_INVALID" "$(cat "$LOG")" 'malformed reporter output leaves current detail unchanged'
+
 # A failed sort must not replace either source file with partial compact output.
 clear_logs
 TZ=UTC beat "$PAST_A" paired sportx . failed-sort

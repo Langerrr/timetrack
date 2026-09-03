@@ -209,6 +209,9 @@ compact file also holds the active-day marker, so an ordinary hook checks for a
 rollover without scanning the current file. Rewrites and appends share a
 per-machine POSIX `mkdir` lock. Reconstruction preferences are applied at
 rollover; a later configuration change does not reinterpret completed totals.
+Source and generated rows are validated before either file is replaced, so a
+mismatched or interrupted plugin upgrade fails closed without discarding the
+recoverable input.
 
 ## Hook capture
 

@@ -360,12 +360,14 @@ exposes no focus, scroll, or typing-start event:
 
 ## Verification result
 
-- All 227 shell checks pass, including legacy/mixed log migration, daily
+- All 237 shell checks pass, including legacy/mixed log migration, daily
   compaction, same-day idempotence, concurrent appends, sort-failure recovery,
-  cross-midnight state, delayed reading estimates, remote two-file sync, the
-  bundled skill wrapper, and hook failure containment.
-- The current Codex CLI accepts and installs the version 0.4.0 manifest with its
-  explicit `hooks/codex-hooks.json` path in a temporary Codex home.
+  malformed source/output preservation, cross-midnight state, delayed reading
+  estimates, remote two-file sync, the bundled skill wrapper, and hook failure
+  containment.
+- The current Codex CLI accepted and installed the version 0.4.0 manifest with
+  its explicit `hooks/codex-hooks.json` path in a temporary Codex home. Version
+  0.4.1 changes the compaction guards and manifest version only.
 - The skill validator and Claude plugin validator pass. The older standalone
   plugin validator bundled with the local plugin-creation tooling rejects the
   manifest's `hooks` field, but that conflicts with both the current Codex CLI

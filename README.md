@@ -339,7 +339,9 @@ On the first hook, manual entry, or report after midnight, `tt` reconstructs the
 completed day, merges it into the compact file, and removes those detailed rows.
 A small internal `state` row may remain when an interval crosses midnight. An
 old single-file `events-<machine>.tsv` is migrated automatically the first time
-the updated tool writes or reports.
+the updated tool writes or reports. Before replacing either file, rollover
+validates both its source rows and generated rows; unexpected content stops the
+operation with the original files intact.
 
 Current detail keeps the original eleven columns:
 

@@ -507,9 +507,86 @@ tt_compact_marker() { # compact-file
   awk -F '\t' 'NR == 1 { if ($2 == "compact") print $3; exit }' "$1"
 }
 
+tt_validate_rows() { # file role
+  valid_file=$1
+  valid_role=$2
+  [ -f "$valid_file" ] || return 0
+  awk -F '\t' -v role="$valid_role" '
+    function uint(value) { return value ~ /^[0-9]+$/ }
+    function tracked_mode(value) {
+      return value == "paired" || value == "solo" || value == "manual"
+    }
+    function valid_compact() {
+      return NF >= 11 && uint($3) && uint($4) && $3 == $4
+    }
+    function valid_total() {
+      return NF >= 12 && uint($3) && uint($4) && $4 > $3 &&
+             tracked_mode($7) && $8 != "" && $9 != "" &&
+             uint($11) && uint($12)
+    }
+    function valid_beat() {
+      return NF >= 11 && uint($3) && uint($4) && $4 >= $3 &&
+             ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
+    }
+    function valid_span() {
+      return NF >= 11 && uint($3) && uint($4) && $4 >= $3 &&
+             $7 == "manual" && $8 != "" && $9 != ""
+    }
+    function valid_state() {
+      return NF >= 18 && uint($3) && uint($4) && $4 >= $3 &&
+             ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
+    }
+    function valid_state_child() {
+      return NF >= 12 && uint($3) && uint($4) && $4 >= $3 &&
+             ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
+    }
+    function valid_detail() {
+      return ($2 == "beat" && valid_beat()) ||
+             ($2 == "span" && valid_span()) ||
+             ($2 == "state" && valid_state()) ||
+             (($2 == "state-tool" || $2 == "state-agent") && valid_state_child())
+    }
+    $0 == "" { next }
+    role == "compact-source" {
+      if (($2 == "compact" && valid_compact()) ||
+          ($2 == "total" && valid_total()) || valid_detail()) next
+      bad = 1; next
+    }
+    role == "current-source" {
+      if (valid_detail()) next
+      bad = 1; next
+    }
+    role == "compact-output" {
+      if ($2 == "total" && valid_total()) next
+      bad = 1; next
+    }
+    role == "state-output" {
+      if (($2 == "state" && valid_state()) ||
+          (($2 == "state-tool" || $2 == "state-agent") && valid_state_child())) next
+      bad = 1; next
+    }
+    { bad = 1 }
+    END { exit bad ? 1 : 0 }
+  ' "$valid_file"
+}
+
+tt_storage_valid() {
+  tt_validate_rows "$(tt_compact_file)" compact-source &&
+    tt_validate_rows "$(tt_current_file)" current-source
+}
+
+tt_compact_has_detail() { # compact-file
+  [ -f "$1" ] || return 1
+  awk -F '\t' '
+    $2 == "beat" || $2 == "span" || $2 == "state" ||
+    $2 == "state-tool" || $2 == "state-agent" { found = 1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$1"
+}
+
 tt_compact_cleanup() {
   rm -f "$compact_source" "$compact_input" "$compact_sorted" \
-    "$compact_new" "$current_new"
+    "$compact_output" "$state_output" "$compact_new" "$current_new"
 }
 
 # The caller holds the per-machine event lock. Reconstruct all detail before
@@ -524,6 +601,8 @@ tt_compact_locked() { # cutoff-epoch
   compact_source="$TT_HOME/.tt-source-$compact_machine.$$"
   compact_input="$TT_HOME/.tt-input-$compact_machine.$$"
   compact_sorted="$TT_HOME/.tt-sorted-$compact_machine.$$"
+  compact_output="$TT_HOME/.tt-total-$compact_machine.$$"
+  state_output="$TT_HOME/.tt-state-$compact_machine.$$"
   compact_new="$TT_HOME/.tt-compact-$compact_machine.$$"
   current_new="$TT_HOME/.tt-current-$compact_machine.$$"
   compact_day=$(tt_fmt "$compact_cutoff" '%Y-%m-%d') || return 1
@@ -532,6 +611,10 @@ tt_compact_locked() { # cutoff-epoch
 
   [ -f "$compact_file" ] || : > "$compact_file"
   [ -f "$current_file" ] || : > "$current_file"
+  if ! tt_storage_valid; then
+    tt_compact_cleanup
+    return 1
+  fi
   if ! cat "$compact_file" "$current_file" > "$compact_source"; then
     tt_compact_cleanup
     return 1
@@ -584,7 +667,15 @@ tt_compact_locked() { # cutoff-epoch
         -v gap="$compact_gap" -v reading_wpm="$compact_wpm" \
         -v max_reading="$compact_reading" -v max_active="$compact_active" \
         -v output_mode=compact -v compact_machine="$compact_machine" \
-        -f "$compact_lib/report.awk" "$compact_sorted" >> "$compact_new"; then
+        -f "$compact_lib/report.awk" "$compact_sorted" > "$compact_output"; then
+      tt_compact_cleanup
+      return 1
+    fi
+    if ! tt_validate_rows "$compact_output" compact-output; then
+      tt_compact_cleanup
+      return 1
+    fi
+    if ! cat "$compact_output" >> "$compact_new"; then
       tt_compact_cleanup
       return 1
     fi
@@ -619,7 +710,15 @@ tt_compact_locked() { # cutoff-epoch
       -v reading_wpm="$compact_wpm" -v max_reading="$compact_reading" \
       -v max_active="$compact_active" -v output_mode=state \
       -v state_at="$compact_cutoff" -f "$compact_lib/report.awk" \
-      "$compact_sorted" >> "$current_new"; then
+      "$compact_sorted" > "$state_output"; then
+    tt_compact_cleanup
+    return 1
+  fi
+  if ! tt_validate_rows "$state_output" state-output; then
+    tt_compact_cleanup
+    return 1
+  fi
+  if ! cat "$state_output" >> "$current_new"; then
     tt_compact_cleanup
     return 1
   fi
@@ -659,8 +758,15 @@ tt_compact() { # [force]
   compact_today=$(tt_midnight "$(tt_now)") || {
     tt_event_unlock; trap - EXIT HUP INT TERM; return 1;
   }
+  if ! tt_gitignore_ready && ! tt_ensure_gitignore; then
+    tt_event_unlock; trap - EXIT HUP INT TERM; return 1
+  fi
+  if ! tt_storage_valid; then
+    tt_event_unlock; trap - EXIT HUP INT TERM; return 1
+  fi
   compact_marker=$(tt_compact_marker "$(tt_compact_file)")
-  if [ "${1:-}" = force ] || [ "$compact_marker" != "$compact_today" ]; then
+  if [ "${1:-}" = force ] || [ "$compact_marker" != "$compact_today" ] ||
+      tt_compact_has_detail "$(tt_compact_file)"; then
     tt_compact_locked "$compact_today" || {
       tt_event_unlock; trap - EXIT HUP INT TERM; return 1;
     }
@@ -676,6 +782,9 @@ tt_append_row() { # row start-epoch
   mkdir -p "$TT_HOME" || return 1
   tt_event_lock || return 1
   trap 'tt_event_unlock' EXIT HUP INT TERM
+  if ! tt_gitignore_ready && ! tt_ensure_gitignore; then
+    tt_event_unlock; trap - EXIT HUP INT TERM; return 1
+  fi
   if ! printf '%s\n' "$append_text" >> "$(tt_current_file)"; then
     tt_event_unlock; trap - EXIT HUP INT TERM; return 1
   fi
@@ -713,6 +822,19 @@ tt_ensure_gitignore() {
     return 1
   fi
   mv "$ignore_new" "$ignore_file" || { rm -f "$ignore_new"; return 1; }
+}
+
+tt_gitignore_ready() {
+  ignore_file="$TT_HOME/.gitignore"
+  [ -f "$ignore_file" ] || return 1
+  awk '
+    $0 == "modes" { modes = 1 }
+    $0 == "modes.lock/" { modes_lock = 1 }
+    $0 == "events-*.lock/" { events_lock = 1 }
+    $0 == "current-*.tsv" { current = 1 }
+    $0 == ".tt-*" { temporary = 1 }
+    END { exit modes && modes_lock && events_lock && current && temporary ? 0 : 1 }
+  ' "$ignore_file"
 }
 
 cmd_report_help() {
