@@ -13,7 +13,10 @@ The user states a project, a duration, and usually when. Resolve each before run
 
 1. **Project.** Match what they said against the directories under `~/workspace`
    (`ls ~/workspace`). "sportx", "the sportsx thing" and "SportX" all resolve to `sportx`.
-   Ask when two directories match equally well.
+   Ask when two directories match equally well, and ask when **none** does: `tt add`
+   accepts any string as PROJECT, so a name you guessed at creates a project that
+   is indistinguishable from a real one in every report afterwards. Say which
+   directory you could not find a match for, and let the user name it.
 2. **Duration.** Use what they stated. `90m`, `1.5h`, `2h30m` and a bare number of
    minutes all parse.
 3. **When.** Convert their phrasing to `YYYY-MM-DD HH:MM` using the current
