@@ -312,6 +312,20 @@ assert_eq "1" "$(grep -c '^machine=' "$RHOME/.timetrack/config")" 'one machine l
 assert_eq "macmini" "$(TT_HOME="$RHOME/.timetrack" sh "$TT" debug-machine)" 'a stale machine name is replaced'
 assert_contains "$(cat "$RHOME/.timetrack/config")" "TT_IDLE_GAP=600" 'the other keys survive the replacement'
 
+# Naming the machine is the only thing install-remote really does, so a rewrite
+# that fails has to stop rather than fall through to tt init and exit 0.
+mkdir -p "$SANDBOX/failbin"
+cat > "$SANDBOX/failbin/awk" <<'AWKEOF'
+#!/bin/sh
+exit 1
+AWKEOF
+chmod +x "$SANDBOX/failbin/awk"
+printf 'TT_IDLE_GAP=600\n' > "$RHOME/.timetrack/config"
+assert_status 1 'a config rewrite that fails stops the install' -- \
+  sh -c "HOME='$RHOME' PATH='$SANDBOX/failbin:$SANDBOX/fakebin:$PATH' sh '$SSH_CMD'"
+assert_eq "0" "$(grep -c '^machine=' "$RHOME/.timetrack/config")" 'a failed rewrite leaves no machine name behind'
+assert_eq "" "$(ls "$RHOME/.timetrack/config.new" 2>/dev/null)" 'a failed rewrite leaves no half-written config behind'
+
 # ssh reports its own failures as 255; anything else came from the far side.
 assert_contains "$(SSH_EXIT=255 TT_SSH="$SSHFAIL" sh "$TT" install-remote macmini 2>&1)" \
   "could not reach macmini" 'a connection failure blames the connection'

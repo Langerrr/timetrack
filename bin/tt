@@ -403,7 +403,10 @@ cmd_install_remote() {
   #
   # The config is rewritten whole by awk rather than patched by sed, so a file
   # whose last line was hand-edited without a trailing newline gains one instead
-  # of having the next key run onto the end of it.
+  # of having the next key run onto the end of it. The rewrite is tested
+  # explicitly rather than joined to the mv with &&: set -e exempts a command
+  # that precedes &&, so a failed rewrite would fall through to tt init and the
+  # whole install would exit 0 without ever naming the machine.
   remote=$(cat <<EOF
 set -e
 d=\$HOME/timetrack-plugin
@@ -413,11 +416,16 @@ fi
 mkdir -p "\$HOME/.timetrack"
 c=\$HOME/.timetrack/config
 [ -f "\$c" ] || : > "\$c"
-awk -v m='machine=$host' '
+if ! awk -v m='machine=$host' '
   /^machine=/ { print m; seen = 1; next }
   { print }
   END { if (!seen) print m }
-' "\$c" > "\$c.new" && mv "\$c.new" "\$c"
+' "\$c" > "\$c.new"; then
+  rm -f "\$c.new"
+  echo "tt: could not write machine=$host into \$c" >&2
+  exit 1
+fi
+mv "\$c.new" "\$c"
 sh "\$d/bin/tt" init
 EOF
 )
