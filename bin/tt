@@ -88,22 +88,48 @@ tt_attribute() { # abs-path -> project<TAB>subpath
   esac
 }
 
-tt_mode_key() { # abs-path -> filename
-  printf '%s' "$1" | tr -c 'A-Za-z0-9.-' '_'
-}
+# Every mode lives in one file, as mode<TAB>abspath lines matched on the exact
+# path. A path encoded into a file name cannot be matched back to one directory:
+# tr maps both / and _ to the same character, so /x/y and /x_y name one file and
+# two unrelated projects would share a mode.
+tt_modes_file() { printf '%s/modes\n' "$TT_HOME"; }
 
-# The file name is a lossy encoding; the file body carries the exact path.
 tt_mode() { # abs-path -> paired|solo
-  f="$TT_HOME/mode/$(tt_mode_key "$(tt_abs "$1")")"
+  p=$(tt_abs "$1")
+  f=$(tt_modes_file)
   [ -f "$f" ] || { printf 'paired\n'; return; }
-  cut -f1 < "$f"
+  m=$(TT_MODE_PATH=$p awk -F '\t' '
+    BEGIN { p = ENVIRON["TT_MODE_PATH"] }
+    $2 == p { v = $1 }
+    END { if (v != "") print v }
+  ' "$f")
+  [ -n "${m:-}" ] || m=paired
+  printf '%s\n' "$m"
 }
 
 tt_set_mode() { # mode [path]
   m=$1
   p=$(tt_abs "${2:-$PWD}")
-  mkdir -p "$TT_HOME/mode" || tt_die "cannot create $TT_HOME/mode"
-  printf '%s\t%s\n' "$m" "$p" > "$TT_HOME/mode/$(tt_mode_key "$p")"
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
+  f=$(tt_modes_file)
+  if [ -f "$f" ]; then src=$f; else src=/dev/null; fi
+  # Rewritten whole into a temporary file and moved into place, so a reader
+  # racing this sees either the old file or the new one, never half of either.
+  t="$f.$$"
+  if TT_MODE=$m TT_MODE_PATH=$p awk -F '\t' '
+    BEGIN { m = ENVIRON["TT_MODE"]; p = ENVIRON["TT_MODE_PATH"] }
+    $2 == p {
+      if (!seen) { printf "%s\t%s\n", m, p; seen = 1 }
+      next
+    }
+    NF >= 2 { print }
+    END { if (!seen) printf "%s\t%s\n", m, p }
+  ' "$src" > "$t"
+  then
+    mv "$t" "$f" || { rm -f "$t"; tt_die "cannot write $f"; }
+  else
+    rm -f "$t"; tt_die "cannot write $f"
+  fi
   printf '%s: %s\n' "$m" "$p"
 }
 
@@ -302,19 +328,17 @@ cmd_report() {
 }
 
 cmd_init() {
-  mkdir -p "$TT_HOME/mode" || tt_die "cannot create $TT_HOME"
+  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
   [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n' > "$TT_HOME/config"
   f=$(tt_log_file); [ -f "$f" ] || : > "$f"
+  f=$(tt_modes_file); [ -f "$f" ] || : > "$f"
   printf 'initialised %s (machine: %s)\n' "$TT_HOME" "$(tt_machine)"
 }
 
 cmd_sessions() {
-  [ -d "$TT_HOME/mode" ] || return 0
-  for f in "$TT_HOME/mode"/*; do
-    [ -f "$f" ] || continue
-    m=$(cut -f1 < "$f"); p=$(cut -f2 < "$f")
-    printf '%-7s %s\n' "$m" "$p"
-  done
+  f=$(tt_modes_file)
+  [ -f "$f" ] || return 0
+  awk -F '\t' 'NF >= 2 { printf "%-7s %s\n", $1, $2 }' "$f"
 }
 
 # Both remote commands hand this string to a shell running on the far side --

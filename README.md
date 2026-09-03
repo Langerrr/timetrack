@@ -121,18 +121,18 @@ tt init
 ```
 
 That writes `~/.timetrack/` with a `config`, an empty `events-<machine>.tsv` and
-a `mode/` directory. To keep the log across machines, make it a git repository
+an empty `modes` file. To keep the log across machines, make it a git repository
 with a **private** remote:
 
 ```sh
 git -C ~/.timetrack init -b main
-printf 'mode/\n' > ~/.timetrack/.gitignore
+printf 'modes\n' > ~/.timetrack/.gitignore
 git -C ~/.timetrack remote add origin git@github.com:you/timetrack-log.git
 git -C ~/.timetrack add -A
 git -C ~/.timetrack commit -m "Start the time log"
 ```
 
-`mode/` is gitignored on purpose: it is live per-machine state, not history.
+`modes` is gitignored on purpose: it is live per-machine state, not history.
 
 Each machine appends only to its own `events-<machine>.tsv`, so pulls and pushes
 between machines touch disjoint files and never conflict.

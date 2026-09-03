@@ -43,6 +43,23 @@ assert_contains "$(sh "$TT" sessions)" "solo" 'sessions lists the mode'
 assert_contains "$(sh "$TT" sessions)" "$TT_ROOT/sportx/saas-backend" 'sessions lists the true path'
 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" >/dev/null
 
+# Two directories whose paths differ only where a path separator meets an
+# underscore. Any scheme that encodes a path into a single file name maps both
+# to one name, so each must be able to hold its own mode independently.
+mkdir -p "$TT_ROOT/coll/x" "$TT_ROOT/coll_x"
+sh "$TT" solo "$TT_ROOT/coll/x" >/dev/null
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/coll_x")" 'setting one of two colliding paths leaves the other alone'
+sh "$TT" paired "$TT_ROOT/coll_x" >/dev/null
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/coll/x")" 'colliding paths hold different modes at once'
+assert_eq "2" "$(sh "$TT" sessions | grep -c 'coll')" 'both colliding paths are listed'
+sh "$TT" paired "$TT_ROOT/coll/x" >/dev/null
+
+# Setting a mode twice replaces the line rather than adding a second one.
+sh "$TT" solo "$TT_ROOT/tuurny" >/dev/null
+sh "$TT" paired "$TT_ROOT/tuurny" >/dev/null
+assert_eq "1" "$(sh "$TT" sessions | grep -c 'tuurny')" 'a repeated set replaces its line'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/tuurny")" 'the replacement is what reads back'
+
 printf 'Task 3: hook capture\n'
 LOG="$TT_HOME/events-$(sh "$TT" debug-machine).tsv"
 : > "$LOG"
