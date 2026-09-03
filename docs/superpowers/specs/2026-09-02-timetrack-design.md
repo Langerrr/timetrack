@@ -69,7 +69,7 @@ rewritten whole when a mode is set. A directory with no line reads as `paired`.
 
     tt solo [path]      # path defaults to $PWD, resolved absolute
     tt paired [path]
-    tt sessions         # recently active session directories and their modes
+    tt sessions         # every session directory whose mode was set, and its mode
 
 Two agents started in different directories hold independent modes, so a solo
 run in one repository and paired work in another record correctly at the same
