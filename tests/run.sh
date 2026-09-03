@@ -236,6 +236,29 @@ assert_eq "2026-09-06T01:00:00-0300" \
   "$(TZ=America/Santiago sh "$TT" debug-iso "$(TZ=America/Santiago TT_NOW=$SANTIAGO sh "$TT" debug-midnight)")" \
   'a day with no 00:00 starts at its first real instant'
 
+# The same anchoring across the transitions that break naive arithmetic: a 02:00
+# spring forward, a fall-back day, and a shift that is not a whole hour.
+midnight_of() { # tz 'YYYY-MM-DD HH:MM'
+  e=$(TZ=$1 sh "$TT" debug-epoch "$2") || return 1
+  TZ=$1 sh "$TT" debug-iso "$(TZ=$1 TT_NOW=$e sh "$TT" debug-midnight)"
+}
+assert_eq "2026-03-29T00:00:00+0000" "$(midnight_of Europe/London '2026-03-29 15:00')" \
+  'a London spring-forward day anchors at 00:00 GMT'
+assert_eq "2026-10-25T00:00:00+0100" "$(midnight_of Europe/London '2026-10-25 15:00')" \
+  'a London fall-back day anchors at 00:00 BST'
+assert_eq "2026-03-08T00:00:00-0500" "$(midnight_of America/New_York '2026-03-08 15:00')" \
+  'a New York spring-forward day anchors at 00:00 EST'
+assert_eq "2026-03-08T00:00:00-0500" "$(midnight_of America/New_York '2026-03-08 03:30')" \
+  'the half hour just after a spring forward anchors on its own day'
+assert_eq "2026-11-01T00:00:00-0400" "$(midnight_of America/New_York '2026-11-01 15:00')" \
+  'a fall-back day, 25 hours long, anchors at 00:00 EDT'
+assert_eq "2026-10-04T00:00:00+1030" "$(midnight_of Australia/Lord_Howe '2026-10-04 15:00')" \
+  'a 30-minute spring forward anchors at 00:00'
+assert_eq "2026-10-04T00:00:00+1030" "$(midnight_of Australia/Lord_Howe '2026-10-04 02:30')" \
+  'the half hour just after a 30-minute shift anchors on its own day'
+assert_eq "2026-04-05T00:00:00+1100" "$(midnight_of Australia/Lord_Howe '2026-04-05 15:00')" \
+  'a 30-minute fall back anchors at 00:00'
+
 # %H of 09 and %M of 08 must not be read as octal.
 ZEROPAD=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 09:08')
 assert_eq "2026-09-02T00:00:00+0000" \
