@@ -7,8 +7,10 @@ TT_ROOT=${TT_ROOT:-$HOME/workspace}
 TT_IDLE_GAP=${TT_IDLE_GAP:-900}
 TT_READING_WPM_SET=${TT_READING_WPM+x}
 TT_MAX_READING_TIME_SET=${TT_MAX_READING_TIME+x}
+TT_MAX_ACTIVE_GAP_SET=${TT_MAX_ACTIVE_GAP+x}
 TT_READING_WPM=${TT_READING_WPM:-120}
 TT_MAX_READING_TIME=${TT_MAX_READING_TIME:-600}
+TT_MAX_ACTIVE_GAP=${TT_MAX_ACTIVE_GAP:-3600}
 
 tt_die() { printf 'tt: %s\n' "$1" >&2; exit 1; }
 
@@ -255,24 +257,42 @@ tt_positive_number() { # value
   }'
 }
 
-tt_reading_wpm() {
-  value=$TT_READING_WPM
-  if [ -z "$TT_READING_WPM_SET" ]; then
-    configured=$(tt_config TT_READING_WPM) || configured=''
+# Zero is a meaningful setting for the knobs that can be switched off, so those
+# validate against this instead.
+tt_nonnegative_number() { # value
+  awk -v value="$1" 'BEGIN {
+    if (value ~ /^[0-9]+([.][0-9]+)?$/) exit 0
+    exit 1
+  }'
+}
+
+# The environment outranks the config file, which is why each caller passes the
+# marker captured before defaults were applied: an unset variable must still
+# yield to the file. A value the validator rejects is a typo, and a typo must
+# not quietly redefine what a report counts.
+tt_number_setting() { # name set-marker current default validator
+  value=$3
+  if [ -z "$2" ]; then
+    configured=$(tt_config "$1") || configured=''
     [ -z "${configured:-}" ] || value=$configured
   fi
-  tt_positive_number "$value" || value=120
+  "$5" "$value" || value=$4
   printf '%s\n' "$value"
 }
 
+tt_reading_wpm() {
+  tt_number_setting TT_READING_WPM "$TT_READING_WPM_SET" \
+    "$TT_READING_WPM" 120 tt_nonnegative_number
+}
+
 tt_max_reading_time() {
-  value=$TT_MAX_READING_TIME
-  if [ -z "$TT_MAX_READING_TIME_SET" ]; then
-    configured=$(tt_config TT_MAX_READING_TIME) || configured=''
-    [ -z "${configured:-}" ] || value=$configured
-  fi
-  tt_positive_number "$value" || value=600
-  printf '%s\n' "$value"
+  tt_number_setting TT_MAX_READING_TIME "$TT_MAX_READING_TIME_SET" \
+    "$TT_MAX_READING_TIME" 600 tt_positive_number
+}
+
+tt_max_active_gap() {
+  tt_number_setting TT_MAX_ACTIVE_GAP "$TT_MAX_ACTIVE_GAP_SET" \
+    "$TT_MAX_ACTIVE_GAP" 3600 tt_nonnegative_number
 }
 
 # Accepts 90m, 1.5h, 2h30m, or a bare number read as minutes.
@@ -333,7 +353,10 @@ cmd_hook() {
   [ -n "$sid" ] || sid='-'
   evt=$(tt_json_str hook_event_name "$input")
   [ -n "$evt" ] || evt='-'
+  # Codex calls the turn identifier turn_id and Claude Code calls it prompt_id.
+  # Both name a single user turn, so either fills the same column.
   turn=$(tt_json_str turn_id "$input")
+  [ -n "$turn" ] || turn=$(tt_json_str prompt_id "$input")
   [ -n "$turn" ] || turn='-'
   tool=$(tt_json_str tool_use_id "$input")
   [ -n "$tool" ] || tool='-'
@@ -456,6 +479,7 @@ cmd_report() {
   tt_positive_number "$gap" || gap=900
   reading_wpm=$(tt_reading_wpm)
   max_reading=$(tt_max_reading_time)
+  max_active=$(tt_max_active_gap)
   lib=${TT_LIB:-$(tt_self)/../lib}
 
   # Prefix each row with its input sequence before sorting. The sequence is the
@@ -470,12 +494,13 @@ cmd_report() {
     | cut -f 2- \
     | awk -v since="$since" -v upto="$upto" -v gap="$gap" \
           -v reading_wpm="$reading_wpm" -v max_reading="$max_reading" \
+          -v max_active="$max_active" \
           -v byday="$byday" -v detail="$detail" -f "$lib/report.awk"
 }
 
 cmd_init() {
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
-  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n# TT_READING_WPM=120\n# TT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
+  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n# TT_MAX_ACTIVE_GAP=3600\n# TT_READING_WPM=120 (0 disables the reading estimate)\n# TT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
   f=$(tt_log_file); [ -f "$f" ] || : > "$f"
   f=$(tt_modes_file); [ -f "$f" ] || : > "$f"
   printf 'initialised %s (machine: %s)\n' "$TT_HOME" "$(tt_machine)"
@@ -598,7 +623,9 @@ EOF
 
 cmd_hooks_snippet() {
   case "${1:-claude}" in
-    claude) events='SessionStart UserPromptSubmit PreToolUse PostToolUse Stop'
+    claude) events='SessionStart UserPromptSubmit PreToolUse PostToolUse
+                    PostToolUseFailure PermissionDenied SubagentStart
+                    SubagentStop Stop StopFailure SessionEnd'
             cmd='sh -c '"'"'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt" hook'"'"''
             printf 'Add to ~/.claude/settings.json under "hooks":\n\n' ;;
     codex)  events='SessionStart UserPromptSubmit PreToolUse PostToolUse Stop Interrupt SessionEnd SubagentStart SubagentStop'

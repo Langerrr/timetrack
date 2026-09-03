@@ -16,13 +16,19 @@ Every event lands in one row. There are two kinds:
   point in time, not an interval.
 - **`span`** — written by `tt add`, bounding a duration you stated.
 
-Reports rebuild intervals from beats. Complete Codex turns, tool calls and
-subagent runs are known-active intervals even when they exceed `TT_IDLE_GAP`.
-For legacy or incomplete lifecycle data, two consecutive beats from the same
-machine, harness, session and directory contribute their difference only when
-they are no more than `TT_IDLE_GAP` apart (900 seconds by default). A final
-unmatched start never extends to report time, so a killed terminal or crashed
-harness leaves nothing dangling.
+Reports rebuild intervals from beats. Complete turns, tool calls and subagent
+runs are known-active intervals even when they exceed `TT_IDLE_GAP`. For legacy
+or incomplete lifecycle data, two consecutive beats from the same machine,
+harness, session and directory contribute their difference only when they are
+no more than `TT_IDLE_GAP` apart (900 seconds by default). A final unmatched
+start never extends to report time, so a killed terminal or crashed harness
+leaves nothing dangling.
+
+Not every ending gets recorded — Claude Code fires no hook when you interrupt —
+so a single gap inside an open turn or tool call credits at most
+`TT_MAX_ACTIVE_GAP` (3600 seconds by default). A prompt carrying a new turn id
+closes the turn before it, and a `SessionStart` closes everything open, which is
+what keeps a resumed session from billing the hours it was not running.
 
 ### The three modes
 
@@ -336,10 +342,10 @@ New beat rows append five lifecycle fields:
 
 | # | Column | Meaning |
 |---|---|---|
-| 12 | `turn_id` | Codex turn identifier, or `-` |
-| 13 | `tool_use_id` | Codex tool-call identifier, or `-` |
-| 14 | `agent_id` | Codex subagent identifier, or `-` |
-| 15 | `agent_type` | Codex subagent type/profile, or `-` |
+| 12 | `turn_id` | Turn identifier — Codex `turn_id`, Claude Code `prompt_id` — or `-` |
+| 13 | `tool_use_id` | Tool-call identifier, or `-` |
+| 14 | `agent_id` | Subagent identifier, or `-` |
+| 15 | `agent_type` | Subagent type or profile, or `-` |
 | 16 | `assistant_words` | Word count of the final message on `Stop`, or `-` |
 
 Column 11 carries different things by kind, and that is deliberate: a span's note
@@ -376,6 +382,7 @@ wins over it.
 machine=DESKTOP-G7ULRNT
 TT_ROOT=/home/lan/workspace
 TT_IDLE_GAP=900
+TT_MAX_ACTIVE_GAP=3600
 TT_READING_WPM=120
 TT_MAX_READING_TIME=600
 ```
@@ -391,7 +398,8 @@ must match the name you pull it by.
 | `TT_HOME` | `~/.timetrack` | Where the log, config and modes live |
 | `TT_ROOT` | `~/workspace` | The root that project names are taken under |
 | `TT_IDLE_GAP` | `900` | Seconds between beats that still count as continuous |
-| `TT_READING_WPM` | `120` | Personal reading-speed assumption for solo-output estimates |
+| `TT_MAX_ACTIVE_GAP` | `3600` | Ceiling on one gap inside an open turn or tool call; `0` removes it |
+| `TT_READING_WPM` | `120` | Personal reading-speed assumption for solo-output estimates; `0` switches the estimate off |
 | `TT_MAX_READING_TIME` | `600` | Maximum seconds added by one solo-output reading estimate |
 | `TT_NOW` | — | Override "now" as epoch seconds; used by the tests |
 | `TT_LIB` | `<tt>/../lib` | Where `report.awk` is found |
@@ -400,10 +408,12 @@ must match the name you pull it by.
 
 ## Which plugin-root variable each harness exports
 
-Claude Code runs the shared command from `hooks/hooks.json`; Codex selects
-`hooks/codex-hooks.json` from its manifest so it can also capture `Interrupt`,
-`SessionEnd`, `SubagentStart` and `SubagentStop`. Both commands resolve `tt`
-through the plugin root. Claude Code uses the compatibility fallback, while the
+Claude Code runs the command from `hooks/hooks.json`; Codex selects
+`hooks/codex-hooks.json` from its manifest. Each file names the events that
+harness fires, and both include everything that opens or closes tracked
+activity: Claude Code adds `PostToolUseFailure`, `PermissionDenied` and
+`StopFailure`, which are the endings `PostToolUse` and `Stop` do not cover, and
+Codex adds `Interrupt`. Both commands resolve `tt` through the plugin root. Claude Code uses the compatibility fallback, while the
 Codex-specific file uses `$PLUGIN_ROOT` directly:
 
 ```sh

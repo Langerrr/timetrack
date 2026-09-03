@@ -50,9 +50,10 @@ these from your own shell keys them to the right session automatically.
     sh "$TT_CMD" paired    # "I'm back", "watching now"
 
 Mode applies from that moment forward. It does not reach backwards over work
-already recorded. Codex also returns a solo directory to paired automatically
-when the user submits their next prompt. If they want the new turn to continue
-solo, set solo again during that turn.
+already recorded. Submitting a prompt returns that directory to paired on both
+harnesses, because a prompt means the user is back. Setting solo and *then*
+sending the instruction that starts the unattended run therefore cancels itself:
+set solo during the turn that is already running, not before it.
 
 ## Reporting
 

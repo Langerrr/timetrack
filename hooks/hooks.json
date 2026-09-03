@@ -12,7 +12,25 @@
     "PostToolUse": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
     ],
+    "PostToolUseFailure": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "PermissionDenied": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "SubagentStart": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "SubagentStop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
     "Stop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "StopFailure": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
+    ],
+    "SessionEnd": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt\" hook'" } ] }
     ]
   }

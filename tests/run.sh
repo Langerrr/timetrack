@@ -152,6 +152,17 @@ assert_eq "agent-9" "$(cut -f14 < "$LOG")" 'subagent id captured'
 assert_eq "worker" "$(cut -f15 < "$LOG")" 'subagent type captured'
 
 : > "$LOG"
+PROMPTIDJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse","prompt_id":"prompt-9","tool_use_id":"tool-9"}'
+printf '%s' "$PROMPTIDJSON" | TT_NOW=1900000011 CLAUDE_PLUGIN_ROOT=/p sh "$TT" hook
+assert_eq "prompt-9" "$(cut -f12 < "$LOG")" 'a Claude prompt_id fills the turn column'
+assert_eq "tool-9" "$(cut -f13 < "$LOG")" 'a Claude tool_use_id fills the tool column'
+
+: > "$LOG"
+BOTHIDJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse","turn_id":"turn-9","prompt_id":"prompt-9"}'
+printf '%s' "$BOTHIDJSON" | TT_NOW=1900000012 PLUGIN_ROOT=/p sh "$TT" hook
+assert_eq "turn-9" "$(cut -f12 < "$LOG")" 'turn_id outranks prompt_id when a harness sends both'
+
+: > "$LOG"
 STOPJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"Stop","turn_id":"turn-7","last_assistant_message":"one two\\nthree four five"}'
 printf '%s' "$STOPJSON" | TT_NOW=1900000007 PLUGIN_ROOT=/p sh "$TT" hook
 assert_eq "5" "$(cut -f16 < "$LOG")" 'Stop stores the assistant output word count'
@@ -394,7 +405,10 @@ beatx 1900000300 paired sportx . s1 UserPromptSubmit turn-2 - - - -
 OUT=$(TT_READING_WPM=60 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
 assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'reading speed is configurable for the user'
 OUT=$(TT_READING_WPM=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'an invalid reading speed falls back safely'
+assert_eq "0h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a reading speed of zero switches the estimate off'
+assert_eq "0h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a disabled estimate contributes no paired time'
+OUT=$(TT_READING_WPM=banana TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a malformed reading speed falls back safely'
 OUT=$(TT_MAX_READING_TIME=60 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
 assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'the reading-time cap is configurable'
 printf 'TT_READING_WPM=60\nTT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
@@ -453,6 +467,84 @@ assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'mixed legac
 beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
 OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
 assert_eq "0h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'an unmatched lifecycle start never extends to report time'
+
+# Every way a turn or a tool call can end, not just the way it ends when
+# nothing goes wrong. A terminal event the harness sends but the engine does
+# not recognise leaves activity proven, and proven activity ignores the idle
+# gap, so each of these would otherwise credit the whole following absence.
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
+beatx 1900002000 paired sportx . s1 StopFailure turn-1 - - - -
+beatx 1900079000 paired sportx . s1 UserPromptSubmit turn-2 - - - -
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a turn ending in an API error closes at StopFailure'
+
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
+beatx 1900000060 paired sportx . s1 PostToolUseFailure turn-1 tool-1 - - -
+beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a failed tool call closes at PostToolUseFailure'
+
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
+beatx 1900000060 paired sportx . s1 PermissionDenied turn-1 tool-1 - - -
+beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a denied tool call closes at PermissionDenied'
+
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
+beatx 1900000060 paired sportx . s1 PostToolUseFailure turn-1 - - - -
+beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a terminal event without a tool id still closes the call'
+
+# A resumed session keeps its id, so SessionStart can land after a turn that
+# nothing closed. Tested with the ceiling off, which would otherwise mask it.
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
+beatx 1900000060 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
+beatx 1900079000 paired sportx . s1 SessionStart - - - - -
+beatx 1900079060 paired sportx . s1 Stop turn-2 - - - 1
+OUT=$(TT_MAX_ACTIVE_GAP=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'resuming a session does not bill the time it was not running'
+
+# An interrupt records nothing, but the next prompt carries a different turn id,
+# and that is proof the earlier turn is over.
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
+beatx 1900000060 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
+beatx 1900079000 paired sportx . s1 UserPromptSubmit turn-2 - - - -
+beatx 1900079060 paired sportx . s1 Stop turn-2 - - - 1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a new turn id proves the interrupted turn ended'
+
+# A legacy row carries no turn id, so it must not trip that rule.
+: > "$LOG"
+beat 1900000000 paired sportx . s1
+beat 1900000060 paired sportx . s1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'rows without turn ids report unchanged'
+
+# No terminal event is guaranteed to arrive: Claude Code fires none on a user
+# interrupt. The ceiling bounds what an unclosed turn can credit.
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
+beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "1h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'an hours-long proven gap is capped at the ceiling'
+OUT=$(TT_MAX_ACTIVE_GAP=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "21h 56m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a ceiling of zero leaves proven activity unbounded'
+OUT=$(TT_MAX_ACTIVE_GAP=7200 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "2h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'the ceiling is configurable'
+
+# A tool call shorter than the ceiling is real work and keeps its full length.
+: > "$LOG"
+beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
+beatx 1900003000 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 50m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a long tool call under the ceiling is counted in full'
 
 printf 'Task 7: range clipping and day boundaries\n'
 DAY1=$(TZ=UTC sh "$TT" debug-epoch '2026-09-01 23:59')
@@ -630,6 +722,13 @@ assert_status 1 'sync pull refuses a host name that is not one' -- sh -c "TT_RSY
 assert_status 1 'sync pull without a host is rejected' -- sh "$TT" sync pull
 assert_status 1 'install-remote without a host is rejected' -- sh "$TT" install-remote
 assert_contains "$(sh "$TT" hooks-snippet claude)" "PreToolUse" 'claude snippet names the events'
+assert_contains "$(sh "$TT" hooks-snippet claude)" "PermissionDenied" 'claude snippet names the denial event'
+CLAUDEHOOKS=$(cat "$REPO/hooks/hooks.json")
+assert_contains "$CLAUDEHOOKS" 'PostToolUseFailure' 'Claude hooks close a failed tool call'
+assert_contains "$CLAUDEHOOKS" 'PermissionDenied' 'Claude hooks close a denied tool call'
+assert_contains "$CLAUDEHOOKS" 'StopFailure' 'Claude hooks close a turn that ends in an error'
+assert_contains "$CLAUDEHOOKS" 'SessionEnd' 'Claude hooks observe the end of a session'
+assert_contains "$CLAUDEHOOKS" 'SubagentStart' 'Claude hooks observe subagent lifecycle'
 assert_contains "$(sh "$TT" hooks-snippet codex)" "PLUGIN_ROOT" 'codex snippet names the plugin root'
 assert_contains "$(sh "$TT" hooks-snippet codex)" "Interrupt" 'codex snippet includes interruption events'
 assert_contains "$(cat "$REPO/.codex-plugin/plugin.json")" 'hooks/codex-hooks.json' 'the Codex manifest selects Codex-specific hooks'

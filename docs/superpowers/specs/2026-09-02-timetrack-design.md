@@ -46,10 +46,10 @@ remain stable:
 
 | # | Column | Meaning |
 |---|--------|---------|
-| 12 | `turn_id` | Codex turn identifier, or `-` |
-| 13 | `tool_use_id` | Codex tool-call identifier, or `-` |
-| 14 | `agent_id` | Codex subagent identifier, or `-` |
-| 15 | `agent_type` | Codex subagent type/profile, or `-` |
+| 12 | `turn_id` | Turn identifier — Codex `turn_id`, Claude Code `prompt_id` — or `-` |
+| 13 | `tool_use_id` | Tool-call identifier, or `-` |
+| 14 | `agent_id` | Subagent identifier, or `-` |
+| 15 | `agent_type` | Subagent type or profile, or `-` |
 | 16 | `assistant_words` | Final assistant-message word count on `Stop`, or `-` |
 
 Manual spans may remain eleven columns. Reports accept old, extended and mixed
@@ -121,6 +121,18 @@ Append order is the numeric tie-breaker for equal-second events. A complete
 recovery evidence when a main-turn boundary is absent. Subagent activity shares
 the parent stream and is not added again when it overlaps the parent turn.
 
+Because known activity ignores `TT_IDLE_GAP`, an ending that was never recorded
+would otherwise credit the whole absence that follows it, and no harness
+guarantees an event for every ending — Claude Code records nothing when the user
+interrupts. Three rules bound this. A single gap inside an open turn, tool call
+or subagent run credits at most `TT_MAX_ACTIVE_GAP` (3600 seconds by default),
+counted forward from the beat that proved the activity, so a genuinely long tool
+call keeps that much of its length rather than being discarded; `0` removes the
+ceiling. A `UserPromptSubmit` carrying a turn identifier other than the one
+still open closes that turn, because a new prompt proves the previous one ended.
+A `SessionStart` arriving mid-stream closes everything open, because a resumed
+session keeps its id and rejoins its own stream.
+
 For legacy and incomplete rows, two consecutive beats no more than
 `TT_IDLE_GAP` apart (default 900 seconds) contribute their difference, assigned
 to the earlier beat's mode. A paired `Stop` to a timely next prompt also uses
@@ -173,9 +185,16 @@ total columns. Estimated is a subset of paired, not another additive mode.
 
 ## Hook capture
 
-Claude Code hooks fire on `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
-`PostToolUse` and `Stop`. Codex additionally captures `Interrupt`, `SessionEnd`,
-`SubagentStart` and `SubagentStop`. Each calls `tt hook`, which reads
+Every event that opens or closes tracked activity is wired on both harnesses.
+
+Claude Code fires `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `SubagentStart`,
+`SubagentStop`, `Stop`, `StopFailure` and `SessionEnd`. `PostToolUse` fires only
+when a tool call succeeds: a failed call ends at `PostToolUseFailure` and a
+denied one at `PermissionDenied`, and a turn ending in an API error ends at
+`StopFailure` rather than `Stop`. Codex fires `SessionStart`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `Interrupt`,
+`SessionEnd`, `SubagentStart` and `SubagentStop`. Each calls `tt hook`, which reads
 `session_id`, `cwd` and available lifecycle identifiers from stdin with a POSIX
 awk scanner, falls back to `$PWD` when the path is absent, appends one line and
 exits. On `Stop`, it reduces `last_assistant_message` to a word count in memory

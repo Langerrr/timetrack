@@ -1,6 +1,6 @@
 # Reconstructs time from an event log. Reads timestamp-sorted TSVs on stdin.
 #   -v since=EPOCH  -v upto=EPOCH  -v gap=SECONDS
-#   -v reading_wpm=NUMBER  -v max_reading=SECONDS
+#   -v reading_wpm=NUMBER  -v max_reading=SECONDS  -v max_active=SECONDS
 #   -v byday=0|1  -v detail=0|1
 BEGIN { FS = "\t" }
 
@@ -108,9 +108,30 @@ $2 != "beat" { next }
 
   queue_touch(project, subpath, at)
 
+  # A resumed session keeps its id, and the id is part of the stream key, so a
+  # SessionStart can arrive mid-stream after a turn that no terminal event ever
+  # closed -- a crash, a killed terminal, an API error. Clearing here, before
+  # the interval below is measured, stops the reopened session from proving
+  # activity across the whole time the session was not running.
+  if (event == "SessionStart") {
+    active_turn[stream] = ""
+    lifecycle_epoch[stream]++
+    active_tools[stream] = 0
+    active_agents[stream] = 0
+  }
+
   if (stream in previous_at) {
     elapsed = at - previous_at[stream]
     proven = (active_turn[stream] != "" || active_tools[stream] > 0 || active_agents[stream] > 0)
+
+    # A prompt arriving while a different turn is still open proves that the
+    # earlier turn ended without recording a terminal event -- an interrupt, or
+    # a harness that has no hook for one. Its end is unknown, so the gap falls
+    # back to the idle rule instead of counting as the agent working. Wildcard
+    # ids, which is what a legacy row carries, never trigger this.
+    if (event == "UserPromptSubmit" && active_turn[stream] != "" &&
+        !ids_match(active_turn[stream], turn))
+      proven = 0
 
     # Stop ends known activity. Only a timely paired Stop-to-prompt gap is
     # inferred as review/composition; a solo return is handled by its bounded
@@ -122,16 +143,26 @@ $2 != "beat" { next }
       inferred = (elapsed <= gap)
     }
 
+    # Activity proven by an open turn, tool or subagent counts regardless of
+    # TT_IDLE_GAP, so the ceiling is what stops an event that never arrived from
+    # crediting unbounded time. Credit runs forward from the beat that proved
+    # the activity, so a genuinely long tool call keeps the ceiling's worth of
+    # it rather than being discarded whole.
+    credit_to = at
+    if (proven && max_active > 0 && elapsed > max_active)
+      credit_to = previous_at[stream] + max_active
+
     if (elapsed > 0 && (proven || inferred))
       queue_interval(previous_project[stream], previous_subpath[stream],
-                     previous_mode[stream], previous_at[stream], at, 0)
+                     previous_mode[stream], previous_at[stream], credit_to, 0)
   }
 
   # A reading estimate is created only when the very next event on this stream
   # is the user's return. This prevents overlap with later observed activity.
   if (event == "UserPromptSubmit" && stream in pending_stop) {
     elapsed = at - pending_stop[stream]
-    if (elapsed > 0 && pending_words[stream] ~ /^[0-9]+$/ && pending_words[stream] > 0) {
+    if (elapsed > 0 && reading_wpm > 0 &&
+        pending_words[stream] ~ /^[0-9]+$/ && pending_words[stream] > 0) {
       seconds = int(pending_words[stream] * 60 / reading_wpm + 0.5)
       if (seconds > elapsed) seconds = elapsed
       if (seconds > max_reading) seconds = max_reading
@@ -154,7 +185,7 @@ $2 != "beat" { next }
   # their own timestamp.
   if (event == "UserPromptSubmit") {
     active_turn[stream] = turn
-  } else if (event == "Stop" || event == "Interrupt") {
+  } else if (event == "Stop" || event == "Interrupt" || event == "StopFailure") {
     if (active_turn[stream] == "" || ids_match(active_turn[stream], turn)) {
       active_turn[stream] = ""
       lifecycle_epoch[stream]++
@@ -174,11 +205,16 @@ $2 != "beat" { next }
       tool_open[lifecycle_key] = 1
       active_tools[stream]++
     }
-  } else if (event == "PostToolUse") {
+  } else if (event == "PostToolUse" || event == "PostToolUseFailure" ||
+             event == "PermissionDenied") {
     lifecycle_key = stream SUBSEP lifecycle_epoch[stream] SUBSEP tool
     if (tool_open[lifecycle_key]) {
       delete tool_open[lifecycle_key]
       if (active_tools[stream] > 0) active_tools[stream]--
+    } else if (tool == "*" && active_tools[stream] > 0) {
+      # A terminal event carrying no tool id names no single open call, so it
+      # closes them all. Leaving them open would prove activity indefinitely.
+      active_tools[stream] = 0
     }
   }
 
