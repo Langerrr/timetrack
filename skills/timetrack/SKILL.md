@@ -63,8 +63,11 @@ Read the table back in prose, leading with the number they asked for.
 
 The log is a tab-separated file at `~/.timetrack/events-<machine>.tsv`, eleven
 columns: `iso_start, kind, start, end, machine, harness, mode, project, subpath,
-session, note`. Rows with kind `span` are manual entries and may be edited or
-deleted. Rows with kind `beat` are captured evidence: leave them as written.
+session, note`. Column 11 holds the user's note on a `span` and the hook event
+name (`SessionStart`, `PreToolUse`, …) on a `beat`, so never read a beat's last
+column back as something the user wrote. Rows with kind `span` are manual entries
+and may be edited or deleted. Rows with kind `beat` are captured evidence: leave
+them as written.
 
 ## Rules
 
