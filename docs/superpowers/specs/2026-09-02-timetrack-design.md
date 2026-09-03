@@ -21,9 +21,10 @@ any agent at all.
 ### Current detail and compact totals
 
 Each machine uses two TSV files. `current-<machine>.tsv` holds detailed rows for
-the current local day. Each detail row is one event, of one of two kinds:
+the current local day. Each detail row is one event, of one of three kinds:
 
 - `beat` — emitted by a harness hook. `start` equals `end`.
+- `mode` — emitted by `tt solo` or `tt paired`. `start` equals `end`.
 - `span` — a manual entry. `start` and `end` bound a stated duration.
 
 Columns, in order:
@@ -31,14 +32,14 @@ Columns, in order:
 | # | Column | Meaning |
 |---|--------|---------|
 | 1 | `iso_start` | Local time, formatted at capture |
-| 2 | `kind` | `beat` or `span` |
+| 2 | `kind` | `beat`, `mode` or `span` |
 | 3 | `start` | Epoch seconds |
 | 4 | `end` | Epoch seconds |
 | 5 | `machine` | Machine identity |
 | 6 | `harness` | `claude`, `codex`, … or `-` for spans |
 | 7 | `mode` | `paired`, `solo` or `manual` |
 | 8 | `project` | Top-level directory under the workspace root |
-| 9 | `subpath` | Remainder of the session directory |
+| 9 | `subpath` | Remainder of the event's working directory |
 | 10 | `session` | Harness session id, or `-` |
 | 11 | `note` | Free text, or `-` |
 
@@ -74,10 +75,9 @@ identically on both operating systems.
 
 ### Attribution
 
-`project` and `subpath` both derive from the agent's session working directory —
-the directory the agent was started in, delivered as `cwd` on hook stdin. An
-agent started in one repository and reading a sibling repository attributes its
-time to where it started.
+`project` and `subpath` derive from `cwd` on each hook or mode event. A harness
+session remains one activity timeline when its cwd changes; subpaths attribute
+sequential pieces and never create concurrent copies of that session.
 
 - Session directory under `TT_ROOT` (default `~/workspace`): `project` is the
   first path segment, `subpath` is the remainder, or `.` at the project root.
@@ -90,31 +90,37 @@ time to where it started.
 `paired` and `solo` are set by hand and apply to agent time. `manual` belongs to
 spans, and marks time that involved no agent.
 
-Mode is held per session directory, in `~/.timetrack/modes`: one
-`mode<TAB>absolute-path` line per directory, matched on the exact path and
-rewritten whole under a lock when a mode is set. A directory with no line reads
-as `paired`. A path holding a TAB or a newline is refused, because those are the
-file's own field and row separators; reading such a path returns `paired`, so
-the hook path can never fail on one.
+The explicit `mode` event in the current detail log is the reporting source of
+truth. It splits matching active intervals at its exact timestamp. The
+`~/.timetrack/modes` file is a capture-time cache with one
+`mode<TAB>absolute-path<TAB>session` row per scope; `session` is `-` for all
+sessions. A row covers its path and descendants, and rows are ordered by their
+last explicit transition so the latest matching scope wins. The cache is
+rewritten whole under a lock. A path with no matching row reads as `paired`.
+Paths or session ids containing the file's TAB/newline separators are refused.
 
-    tt solo [path]      # path defaults to $PWD, resolved absolute
-    tt paired [path]
-    tt sessions         # every session directory whose mode was set, and its mode
+    tt solo [path] [--session id|--all-sessions]      # path defaults to $PWD
+    tt paired [path] [--session id|--all-sessions]
+    tt sessions         # every explicit path/session scope and its mode
 
-Two agents started in different directories hold independent modes, so a solo
-run in one repository and paired work in another record correctly at the same
-time. Two agents started in the same directory share one mode.
+An in-session command uses the harness session id from its environment when one
+is available. An external terminal has no such id and affects every session
+whose current attribution is inside the path subtree. `--session` and
+`--all-sessions` override either default. Session scope disambiguates two
+sessions at one path.
 
-Each beat is stamped with the mode in force at that instant, so a mode changed
-mid-run splits the run at the moment of the change.
+Each beat is stamped from the cache, but the durable mode event supplies the
+exact boundary. Mode remains sticky until another explicit command changes it.
+Only overlap with reconstructed agent activity is classified; a solo window
+does not itself create tracked duration.
 
-`UserPromptSubmit` is the first portable signal that the user has returned.
-When a directory is solo, that hook changes it to paired before writing the
-prompt beat. Codex exposes no scroll, focus, composer or typing-start hook.
+`UserPromptSubmit` never changes mode. Forked or subagent sessions can emit it,
+so it is not reliable evidence that the human returned. Codex also exposes no
+scroll, focus, composer or typing-start hook; `tt paired` is the signal.
 
 After a solo `Stop`, timetrack can estimate reading from the final output size
-when the user next submits a prompt. The estimate is placed immediately before
-that prompt and is:
+when the user next submits a prompt in paired mode. The estimate is placed
+immediately before that prompt, clipped to the explicitly paired portion, and is:
 
     min(assistant_words * 60 / TT_READING_WPM,
         actual Stop-to-prompt gap,
@@ -127,7 +133,9 @@ is also disclosed as a non-additive `ESTIMATED` subset in reports.
 
 ### Reconstructing intervals
 
-Beats group by machine, harness, session and session directory, sorted by start.
+Beats group by machine, harness and session, sorted by start. Rows without a
+usable session id retain project/subpath in their fallback key to avoid joining
+unrelated malformed streams.
 Append order is the numeric tie-breaker for equal-second events. A complete
 `UserPromptSubmit` to `Stop`/`Interrupt` turn counts regardless of
 `TT_IDLE_GAP`; matched tool and subagent lifecycle pairs fill the same gap when
@@ -170,7 +178,7 @@ that do not begin at 00:00. Spans contribute their clipped `end - start`.
       config              # machine= and TT_* preferences
       events-<machine>.tsv  # tracked completed-day totals
       current-<machine>.tsv # gitignored current-day detail and carry state
-      modes               # mode<TAB>absolute-path per session directory
+      modes               # mode<TAB>absolute-path<TAB>session capture cache
 
 A private git repository for the compact files. Current detail, modes, and lock
 directories are gitignored. Each machine writes only its own pair of files, so
@@ -183,7 +191,7 @@ hostname. Setting it explicitly keeps a renamed machine writing to the same file
 
     tt hook                        # read hook JSON on stdin, append one beat
     tt add <project> <duration> [note] [--at 'YYYY-MM-DD HH:MM']
-    tt solo|paired [path]
+    tt solo|paired [path] [--session id|--all-sessions]
     tt sessions
     tt root
     tt report [today|yesterday|week|month] [--since D] [--until D] [--by project|day] [--detail]
@@ -268,8 +276,9 @@ the directories beneath it, convert the relative time to a concrete `--at`
 argument using the current
 timestamp, run `tt add`, and show the row that was written.
 
-**Setting mode.** "I'm heading out, let it run" runs `tt solo`; the agent's own
-working directory is the session directory the hook sees, so the key matches.
+**Setting mode.** "I'm heading out, let it run" runs `tt solo`; "I'm back" runs
+`tt paired`. The current path covers its subtree. When the user identifies one
+of several sessions, pass `--session`; never infer return from a prompt.
 
 **Reporting.** Run `tt report` for the period asked about and read the table back.
 

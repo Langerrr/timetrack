@@ -105,19 +105,28 @@ tt_attribute() { # abs-path -> project<TAB>subpath
   esac
 }
 
-# Every mode lives in one file, as mode<TAB>abspath lines matched on the exact
-# path. A path encoded into a file name cannot be matched back to one directory:
-# tr maps both / and _ to the same character, so /x/y and /x_y name one file and
-# two unrelated projects would share a mode.
+# Current modes are a capture-time cache. Each row is
+# mode<TAB>abspath<TAB>session, where session '-' means every session below the
+# path. Rows are ordered by their last explicit transition, so the latest
+# matching ancestor wins. The durable transition itself is also appended to the
+# event log; this file only lets a hook stamp its beat without scanning history.
 tt_modes_file() { printf '%s/modes\n' "$TT_HOME"; }
 
-tt_mode() { # abs-path -> paired|solo
+tt_mode() { # abs-path [session] -> paired|solo
   p=$(tt_abs "$1")
+  s=${2:--}
   f=$(tt_modes_file)
   [ -f "$f" ] || { printf 'paired\n'; return; }
-  m=$(TT_MODE_PATH=$p awk -F '\t' '
-    BEGIN { p = ENVIRON["TT_MODE_PATH"] }
-    $2 == p { v = $1 }
+  m=$(TT_MODE_PATH=$p TT_MODE_SESSION=$s awk -F '\t' '
+    BEGIN { p = ENVIRON["TT_MODE_PATH"]; session = ENVIRON["TT_MODE_SESSION"] }
+    function contains(scope, path) {
+      return path == scope || index(path, scope "/") == 1
+    }
+    NF >= 2 {
+      row_session = (NF >= 3 && $3 != "" ? $3 : "-")
+      if ((row_session == "-" || row_session == session) && contains($2, p))
+        v = $1
+    }
     END { if (v != "") print v }
   ' "$f")
   [ -n "${m:-}" ] || m=paired
@@ -160,10 +169,11 @@ tt_event_lock() {
 
 tt_event_unlock() { rmdir "$(tt_event_lock_dir)" 2>/dev/null || :; }
 
-tt_set_mode() { # mode [path] [quiet]
+tt_set_mode() { # mode path session [quiet]
   m=$1
   p=$(tt_abs "${2:-$PWD}")
-  # The modes file separates its two fields with a TAB and its rows with a
+  s=${3:--}
+  # The modes file separates its fields with a TAB and its rows with a
   # newline, so a path holding either cannot be stored and read back as itself.
   # Refusing it costs two comparisons; an escaping scheme would cost a format.
   tab=$(printf '\t')
@@ -171,6 +181,11 @@ tt_set_mode() { # mode [path] [quiet]
   case "$p" in
     *"$tab"*) tt_die "cannot record a path containing a tab: $p" ;;
     *"$nl"*)  tt_die "cannot record a path containing a newline: $p" ;;
+  esac
+  case "$s" in
+    *"$tab"*) tt_die "cannot record a session containing a tab" ;;
+    *"$nl"*)  tt_die "cannot record a session containing a newline" ;;
+    '')        tt_die "cannot record an empty session" ;;
   esac
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
   tt_lock || tt_die "timed out waiting for $(tt_lock_dir); if no other tt is running, remove it"
@@ -180,14 +195,17 @@ tt_set_mode() { # mode [path] [quiet]
   # Rewritten whole into a temporary file and moved into place, so a reader
   # racing this sees either the old file or the new one, never half of either.
   t="$f.$$"
-  if TT_MODE=$m TT_MODE_PATH=$p awk -F '\t' '
-    BEGIN { m = ENVIRON["TT_MODE"]; p = ENVIRON["TT_MODE_PATH"] }
-    $2 == p {
-      if (!seen) { printf "%s\t%s\n", m, p; seen = 1 }
-      next
+  if TT_MODE=$m TT_MODE_PATH=$p TT_MODE_SESSION=$s awk -F '\t' '
+    BEGIN {
+      m = ENVIRON["TT_MODE"]; p = ENVIRON["TT_MODE_PATH"]
+      session = ENVIRON["TT_MODE_SESSION"]
     }
-    NF >= 2 { print }
-    END { if (!seen) printf "%s\t%s\n", m, p }
+    NF >= 2 {
+      row_session = (NF >= 3 && $3 != "" ? $3 : "-")
+      if ($2 == p && row_session == session) next
+      printf "%s\t%s\t%s\n", $1, $2, row_session
+    }
+    END { printf "%s\t%s\t%s\n", m, p, session }
   ' "$src" > "$t"
   then
     mv "$t" "$f" || { rm -f "$t"; tt_die "cannot write $f"; }
@@ -196,7 +214,63 @@ tt_set_mode() { # mode [path] [quiet]
   fi
   tt_unlock
   trap - EXIT HUP INT TERM
-  [ "${3:-}" = quiet ] || printf '%s: %s\n' "$m" "$p"
+
+  # The explicit transition is the source of truth for reports. Unlike a mode
+  # stamped on the next hook beat, it splits activity at the instant the user
+  # says they stepped away or returned.
+  now=$(tt_now)
+  attrib=$(tt_attribute "$p")
+  proj=$(printf '%s' "$attrib" | cut -f1)
+  sub=$(printf '%s' "$attrib" | cut -f2)
+  row=$(printf '%s\tmode\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t-' \
+    "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$m" \
+    "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$s")")
+  tt_append_row "$row" "$now" || tt_die "cannot record mode transition in $(tt_log_file)"
+
+  [ "${4:-}" = quiet ] || {
+    if [ "$s" = - ]; then printf '%s: %s (all sessions below path)\n' "$m" "$p"
+    else printf '%s: %s (session %s)\n' "$m" "$p" "$s"
+    fi
+  }
+}
+
+cmd_mode() { # paired|solo [path] [--session id|--all-sessions]
+  mode_command=$1
+  shift
+  mode_path=$PWD
+  mode_path_seen=0
+  # Codex exports its hook session id into in-session shell commands. Claude
+  # builds have used either of the names below; when none is present this is an
+  # ordinary external terminal and the command intentionally scopes by path.
+  if [ -n "${TT_SESSION_ID:-}" ]; then mode_session=$TT_SESSION_ID
+  elif [ -n "${CODEX_SESSION_ID:-}" ]; then mode_session=$CODEX_SESSION_ID
+  elif [ -n "${CODEX_THREAD_ID:-}" ]; then mode_session=$CODEX_THREAD_ID
+  elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then mode_session=$CLAUDE_SESSION_ID
+  elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then mode_session=$CLAUDE_CODE_SESSION_ID
+  else mode_session=-
+  fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session)
+        [ $# -ge 2 ] || tt_die "--session needs an id"
+        mode_session=$2
+        shift 2 ;;
+      --session=*)
+        mode_session=${1#--session=}
+        [ -n "$mode_session" ] || tt_die "--session needs an id"
+        shift ;;
+      --all-sessions)
+        mode_session=-
+        shift ;;
+      -*) tt_die "usage: tt $mode_command [PATH] [--session ID|--all-sessions]" ;;
+      *)
+        [ "$mode_path_seen" -eq 0 ] || tt_die "usage: tt $mode_command [PATH] [--session ID|--all-sessions]"
+        mode_path=$1
+        mode_path_seen=1
+        shift ;;
+    esac
+  done
+  tt_set_mode "$mode_command" "$mode_path" "$mode_session"
 }
 
 # Extracts a top-level JSON string field. A hook payload embeds the whole tool
@@ -406,18 +480,7 @@ cmd_hook() {
   attrib=$(tt_attribute "$cwd")
   proj=$(printf '%s' "$attrib" | cut -f1)
   sub=$(printf '%s' "$attrib" | cut -f2)
-  mode=$(tt_mode "$cwd")
-
-  # Submitting a prompt is the first portable signal that the user returned.
-  # Change the directory state before writing the beat so the new turn starts
-  # paired. Keep a failed mode write contained: hook capture must still return.
-  if [ "$evt" = UserPromptSubmit ] && [ "$mode" = solo ]; then
-    if (tt_set_mode paired "$cwd" quiet) >/dev/null 2>&1; then
-      mode=paired
-    else
-      mode=$(tt_mode "$cwd")
-    fi
-  fi
+  mode=$(tt_mode "$cwd" "$sid")
 
   row=$(printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
@@ -532,6 +595,11 @@ tt_validate_rows() { # file role
       return NF >= 11 && uint($3) && uint($4) && $4 >= $3 &&
              $7 == "manual" && $8 != "" && $9 != ""
     }
+    function valid_mode_event() {
+      return NF >= 11 && uint($3) && uint($4) && $3 == $4 &&
+             ($7 == "paired" || $7 == "solo") &&
+             $8 != "" && $9 != "" && $10 != ""
+    }
     function valid_state() {
       return NF >= 18 && uint($3) && uint($4) && $4 >= $3 &&
              ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
@@ -543,6 +611,7 @@ tt_validate_rows() { # file role
     function valid_detail() {
       return ($2 == "beat" && valid_beat()) ||
              ($2 == "span" && valid_span()) ||
+             ($2 == "mode" && valid_mode_event()) ||
              ($2 == "state" && valid_state()) ||
              (($2 == "state-tool" || $2 == "state-agent") && valid_state_child())
     }
@@ -578,7 +647,7 @@ tt_storage_valid() {
 tt_compact_has_detail() { # compact-file
   [ -f "$1" ] || return 1
   awk -F '\t' '
-    $2 == "beat" || $2 == "span" || $2 == "state" ||
+    $2 == "beat" || $2 == "span" || $2 == "mode" || $2 == "state" ||
     $2 == "state-tool" || $2 == "state-agent" { found = 1; exit }
     END { exit found ? 0 : 1 }
   ' "$1"
@@ -622,7 +691,7 @@ tt_compact_locked() { # cutoff-epoch
 
   if ! compact_first=$(awk -F '\t' -v cutoff="$compact_cutoff" '
     ($2 == "total" && $3 < cutoff) ||
-    (($2 == "beat" || $2 == "span" || $2 == "state") && $3 < cutoff) {
+    (($2 == "beat" || $2 == "span" || $2 == "mode" || $2 == "state") && $3 < cutoff) {
       at = $3 + 0
       if (!seen || at < first) { first = at; seen = 1 }
     }
@@ -697,7 +766,7 @@ tt_compact_locked() { # cutoff-epoch
   compact_active=$(tt_max_active_gap)
   if ! awk -F '\t' '
       $2 == "state" || $2 == "state-tool" || $2 == "state-agent" ||
-      $2 == "beat"
+      $2 == "beat" || $2 == "mode"
     ' "$compact_source" > "$compact_input"; then
     tt_compact_cleanup
     return 1
@@ -723,11 +792,12 @@ tt_compact_locked() { # cutoff-epoch
     return 1
   fi
 
-  # Keep today's beats. A manual span crossing the boundary is clipped so its
-  # completed portion is not counted again at tomorrow's rollover.
+  # Keep today's beats and explicit mode transitions. A manual span crossing
+  # the boundary is clipped so its completed portion is not counted again at
+  # tomorrow's rollover.
   if ! awk -F '\t' -v OFS='\t' -v cutoff="$compact_cutoff" \
       -v cutoff_iso="$compact_iso" '
-    $2 == "beat" && $3 >= cutoff { print; next }
+    ($2 == "beat" || $2 == "mode") && $3 >= cutoff { print; next }
     $2 == "span" && $4 > cutoff {
       if ($3 < cutoff) { $1 = cutoff_iso; $3 = cutoff }
       print
@@ -933,7 +1003,10 @@ cmd_init() {
 cmd_sessions() {
   f=$(tt_modes_file)
   [ -f "$f" ] || return 0
-  awk -F '\t' 'NF >= 2 { printf "%-7s %s\n", $1, $2 }' "$f"
+  awk -F '\t' 'NF >= 2 {
+    session = (NF >= 3 && $3 != "" ? $3 : "-")
+    printf "%-7s %-12s %s\n", $1, (session == "-" ? "all" : session), $2
+  }' "$f"
 }
 
 # Both remote commands hand this string to a shell running on the far side --
@@ -1086,8 +1159,12 @@ RECORD
       Time away from any agent. Duration is 90m, 1.5h, 2h30m or bare
       minutes. --at sets the start and the duration runs forward from it.
       Quote a note longer than one word.
-  solo [PATH]        the agent started in PATH is working without you
-  paired [PATH]      it is working alongside you — the default
+  solo [PATH] [--session ID|--all-sessions]
+      Explicitly mark agent activity below PATH as unattended. The default
+      uses the current in-session shell id when available, otherwise all
+      matching sessions. The flags override that scope.
+  paired [PATH] [--session ID|--all-sessions]
+      Explicitly mark your return. Mode stays unchanged until this command.
 
 READ
   root               print the configured project root
@@ -1096,7 +1173,7 @@ READ
       Time per project, covering today unless given a period. Run
       'tt report --help' for every period and option. ESTIMATED is a
       subset of PAIRED.
-  sessions           session directories whose mode is set, and their modes
+  sessions           path/session scopes whose mode is set, and their modes
 
 OTHER MACHINES
   sync pull HOST         fetch HOST's log into this machine's repo
@@ -1109,7 +1186,10 @@ SETUP
 EXAMPLES
   tt add sportx 90m "architecture review"
   tt add tuurny 2h --at '2026-09-01 14:00'
-  tt solo                     # heading out; the agent keeps working
+  tt solo                     # current harness session, or all from your shell
+  tt solo --session abc123    # explicitly only that session below $PWD
+  tt solo --all-sessions      # explicitly every session below $PWD
+  tt paired                   # back and working alongside the agent
   tt report week --detail
 
 PATH defaults to the current directory. Harnesses call `tt hook`; you don't.
@@ -1124,8 +1204,8 @@ case "$sub" in
   add)           cmd_add "$@" ;;
   help|-h|--help) cmd_help "$@" ;;
   root)          tt_root ;;
-  solo)          tt_set_mode solo "${1:-$PWD}" ;;
-  paired)        tt_set_mode paired "${1:-$PWD}" ;;
+  solo)          cmd_mode solo "$@" ;;
+  paired)        cmd_mode paired "$@" ;;
   sessions)      cmd_sessions ;;
   report)        cmd_report "$@" ;;
   sync)          cmd_sync "$@" ;;
@@ -1140,6 +1220,6 @@ case "$sub" in
   debug-iso)     tt_iso "$1" ;;
   debug-midnight) tt_midnight "$(tt_now)" ;;
   debug-attribute) tt_attribute "$1" ;;
-  debug-mode)    tt_mode "$1" ;;
+  debug-mode)    tt_mode "$1" "${2:--}" ;;
   *)             printf 'tt: unknown subcommand: %s\n' "$sub" >&2; exit 2 ;;
 esac

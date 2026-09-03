@@ -16,6 +16,7 @@ export TT_HOME TT_ROOT
 
 # Harness detection is asserted below, so the ambient harness must not leak in.
 unset CLAUDECODE CLAUDE_PLUGIN_ROOT PLUGIN_ROOT CODEX_HOME
+unset TT_SESSION_ID CODEX_SESSION_ID CODEX_THREAD_ID CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID
 unset TT_READING_WPM TT_MAX_READING_TIME TT_MAX_ACTIVE_GAP
 
 printf 'Task 1: skeleton\n'
@@ -51,9 +52,11 @@ rm -f "$TT_HOME/config"
 assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'default mode is paired'
 sh "$TT" solo "$TT_ROOT/sportx" >/dev/null
 assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'solo is recorded'
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend")" 'a project mode reaches its nested directories'
 assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/tuurny")" 'sibling directory is unaffected'
 sh "$TT" paired "$TT_ROOT/sportx" >/dev/null
 assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx")" 'paired is recorded'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend")" 'a later project transition reaches nested directories'
 
 sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null
 assert_contains "$(sh "$TT" sessions)" "solo" 'sessions lists the mode'
@@ -99,6 +102,24 @@ sh "$TT" solo "$TT_ROOT/tuurny" >/dev/null
 sh "$TT" paired "$TT_ROOT/tuurny" >/dev/null
 assert_eq "1" "$(sh "$TT" sessions | grep -c 'tuurny')" 'a repeated set replaces its line'
 assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/tuurny")" 'the replacement is what reads back'
+
+# A session-specific transition narrows a subtree mode without changing another
+# active session in the same directory.
+sh "$TT" solo "$TT_ROOT/sportx" --session session-one >/dev/null
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend" session-one)" 'a session-specific mode reaches that session below the path'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend" session-two)" 'a session-specific mode leaves a peer session alone'
+assert_contains "$(sh "$TT" sessions)" "session-one" 'sessions identifies a narrowed mode'
+sh "$TT" paired "$TT_ROOT/sportx" --session session-one >/dev/null
+
+# An in-session shell command carries its harness session id, while an external
+# terminal with no such environment remains path-wide.
+CODEX_SESSION_ID=automatic-session sh "$TT" solo "$TT_ROOT/tuurny" >/dev/null
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/tuurny" automatic-session)" 'an in-session command automatically narrows to its Codex session'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/tuurny" another-session)" 'automatic session scope does not affect a peer'
+CODEX_SESSION_ID=automatic-session sh "$TT" paired "$TT_ROOT/tuurny" >/dev/null
+CODEX_SESSION_ID=automatic-session sh "$TT" solo "$TT_ROOT/tuurny" --all-sessions >/dev/null
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/tuurny" another-session)" '--all-sessions overrides in-session narrowing'
+CODEX_SESSION_ID=automatic-session sh "$TT" paired "$TT_ROOT/tuurny" --all-sessions >/dev/null
 
 printf 'Task 3: hook capture\n'
 MACHINE=$(sh "$TT" debug-machine)
@@ -184,28 +205,34 @@ assert_eq "5" "$(cut -f16 < "$LOG")" 'Stop stores the assistant output word coun
 assert_eq "0" "$(grep -c 'one two' "$LOG")" 'Stop never stores raw assistant output'
 
 clear_logs
-sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null
+TT_NOW=1900000007 sh "$TT" solo "$TT_ROOT/sportx/saas-backend" --session abc123 >/dev/null
+assert_eq "mode" "$(cut -f2 < "$LOG")" 'an explicit mode change is recorded as an event'
+assert_eq "solo" "$(cut -f7 < "$LOG")" 'a mode event records the selected mode'
+assert_eq "abc123" "$(cut -f10 < "$LOG")" 'a mode event can target one session'
+clear_logs
 PROMPTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"UserPromptSubmit","turn_id":"turn-8"}'
 printf '%s' "$PROMPTJSON" | TT_NOW=1900000008 PLUGIN_ROOT=/p sh "$TT" hook
-assert_eq "paired" "$(cut -f7 < "$LOG")" 'a prompt submitted after solo is recorded as paired'
-assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend")" 'a prompt submitted after solo changes the stored mode'
+assert_eq "solo" "$(cut -f7 < "$LOG")" 'a prompt does not override an explicit solo signal'
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend" abc123)" 'solo remains sticky until an explicit paired signal'
+TT_NOW=1900000009 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" --session abc123 >/dev/null
 
 clear_logs
 NULLSTOP='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"Stop","turn_id":"turn-8","last_assistant_message":null}'
 printf '%s' "$NULLSTOP" | TT_NOW=1900000009 PLUGIN_ROOT=/p sh "$TT" hook
 assert_eq "-" "$(cut -f16 < "$LOG")" 'a null assistant message records no word estimate'
 
-# A prompt and an explicit mode write may contend for the modes-file lock. The
-# prompt beat itself is paired regardless of which state write completes last.
+# Concurrent explicit writes remain valid and the last completed transition is
+# visible to subsequent hooks.
 clear_logs
-sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null
-printf '%s' "$PROMPTJSON" | TT_NOW=1900000010 PLUGIN_ROOT=/p sh "$TT" hook &
-PROMPT_PID=$!
-sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null &
-MODE_PID=$!
-wait "$PROMPT_PID" "$MODE_PID"
-assert_eq "paired" "$(cut -f7 < "$LOG")" 'a concurrent explicit mode write cannot relabel the submitted prompt'
-assert_eq "1" "$(sh "$TT" sessions | grep -c 'sportx/saas-backend')" 'concurrent return handling leaves one valid mode row'
+TT_NOW=1900000010 sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null &
+MODE_ONE_PID=$!
+TT_NOW=1900000011 sh "$TT" paired "$TT_ROOT/tuurny" >/dev/null &
+MODE_TWO_PID=$!
+wait "$MODE_ONE_PID" "$MODE_TWO_PID"
+assert_eq "2" "$(awk -F '\t' '$2 == "mode" { n++ } END { print n + 0 }' "$LOG")" 'concurrent explicit transitions are both durable'
+assert_eq "1" "$(awk -F '\t' -v path="$TT_ROOT/sportx/saas-backend" \
+  '$2 == path && $3 == "-" { n++ } END { print n + 0 }' "$TT_HOME/modes")" \
+  'concurrent transitions leave one valid all-session row per path'
 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" >/dev/null
 
 assert_status 0 'an internal hook formatting failure is contained' -- \
@@ -249,6 +276,11 @@ beatx() { # epoch mode project subpath session event turn tool agent agent_type 
   printf '%s\tbeat\t%s\t%s\t%s\tcodex\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(sh "$TT" debug-iso "$1")" "$1" "$1" "$M" "$2" "$3" "$4" "$5" \
     "$6" "$7" "$8" "$9" "${10}" "${11}" "${12:--}" >> "$LOG"
+}
+
+mode_event() { # epoch mode project subpath [session]
+  printf '%s\tmode\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t-\n' \
+    "$(sh "$TT" debug-iso "$1")" "$1" "$1" "$M" "$2" "$3" "$4" "${5:--}" >> "$LOG"
 }
 
 report_cell() { # row column-pair-number; reads a report on stdin
@@ -298,11 +330,35 @@ assert_eq "no events in range" "$(TT_NOW=1900100000 sh "$TT" report --since 2000
 clear_logs
 beat 1900000000 paired sportx . s1
 beat 1900000060 paired sportx . s1
+mode_event 1900000090 solo sportx .
 beat 1900000120 solo   sportx . s1
 beat 1900000180 solo   sportx . s1
 OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_contains "$OUT" "0h 02m" 'paired side of a split run'
-assert_contains "$OUT" "0h 01m" 'solo side of a split run'
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'an explicit transition preserves the paired side'
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 2)" 'an explicit transition starts solo at its own timestamp'
+
+# One harness session remains one activity timeline when its cwd moves among
+# nested directories. Subpaths attribute sequential pieces instead of creating
+# concurrent copies of the session.
+clear_logs
+beatx 1900000000 paired sportx docs s1 UserPromptSubmit turn-1 - - - -
+beatx 1900000600 paired sportx docs/implementation s1 PreToolUse turn-1 tool-1 - - -
+beatx 1900001200 paired sportx docs s1 PostToolUse turn-1 tool-1 - - -
+beatx 1900001800 paired sportx docs/implementation s1 Stop turn-1 - - - 1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 30m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'subpath changes do not multiply one session timeline'
+
+# A project-root transition applies to activity attributed anywhere below it,
+# while a narrowed transition affects only the named session.
+clear_logs
+beatx 1900000000 paired sportx docs s1 UserPromptSubmit turn-1 - - - -
+beatx 1900000000 paired sportx docs s2 UserPromptSubmit turn-2 - - - -
+mode_event 1900000600 solo sportx . s1
+beatx 1900001200 solo sportx docs s1 Stop turn-1 - - - 1
+beatx 1900001200 paired sportx docs s2 Stop turn-2 - - - 1
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 30m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a session transition leaves its peer paired'
+assert_eq "0h 10m" "$(printf '%s\n' "$OUT" | report_cell sportx 2)" 'a session transition subtracts only its own solo overlap'
 
 # Duplicate beats at one instant are harmless.
 clear_logs
@@ -407,6 +463,22 @@ OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
 assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" '240 words estimate as two paired minutes at 120 WPM'
 assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'the paired reading subset is visibly estimated'
 assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 5)" 'estimated time is not added twice to total'
+
+# Explicit paired time bounds the reading estimate. Time before the user says
+# they returned cannot be reclassified merely because a prompt followed.
+clear_logs
+beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 600
+mode_event 1900000240 paired sportx . s1
+beatx 1900000300 paired sportx . s1 UserPromptSubmit turn-2 - - - -
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'explicit return reading is counted once'
+assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'reading estimate is clipped to the explicit paired window'
+
+clear_logs
+beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 240
+beatx 1900000480 solo sportx . s1 UserPromptSubmit turn-2 - - - -
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "no events in range" "$OUT" 'a prompt that remains explicitly solo creates no paired estimate'
 
 clear_logs
 beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 600
@@ -843,6 +915,21 @@ TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report yesterday >/dev/null
 assert_eq "0" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$COMPACT" "$LOG")" 'completed dense detail is discarded after rollover'
 assert_eq "2" "$(wc -l < "$COMPACT" | tr -d ' ')" 'one hundred beats become a header and one total row'
 assert_eq "0" "$(wc -l < "$LOG" | tr -d ' ')" 'an inactive old stream leaves no current carry row'
+
+# An explicit transition inside a cross-midnight turn is folded into the old
+# day and carried as the effective mode for the retained side.
+clear_logs
+CROSS_TURN=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 23:30')
+TZ=UTC beatx "$CROSS_TURN" paired sportx docs transition-carry UserPromptSubmit turn-1 - - - -
+TZ=UTC mode_event "$((CROSS_TURN + 900))" solo sportx . transition-carry
+TZ=UTC beatx "$((CROSS_TURN + 2700))" solo sportx docs transition-carry Stop turn-1 - - - 1
+OUT=$(TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report --since 2026-09-02 --until 2026-09-03 --by day)
+assert_eq "0h 15m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-02 1)" 'rollover compacts the paired side before a transition'
+assert_eq "0h 15m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-02 2)" 'rollover compacts the solo side after a transition'
+assert_eq "0h 15m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-03 2)" 'carry state preserves explicit solo mode after midnight'
+assert_eq "0" "$(awk -F '\t' '$2 == "mode" && $3 < cutoff { n++ } END { print n + 0 }' \
+  cutoff="$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:00')" "$LOG")" \
+  'a compacted transition does not remain as unbounded raw history'
 
 # Concurrent hooks serialize around the same current file and release the lock.
 clear_logs

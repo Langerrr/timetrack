@@ -11,16 +11,18 @@ and one current-day detail file.
 
 ## What it records
 
-Every event lands in one row. There are two kinds:
+Every event lands in one row. There are three kinds:
 
 - **`beat`** — written by a harness hook, at the instant it fired. A beat is a
   point in time, not an interval.
 - **`span`** — written by `tt add`, bounding a duration you stated.
+- **`mode`** — written by `tt solo` or `tt paired`, timestamping an explicit
+  human-presence transition.
 
 Reports rebuild intervals from beats. Complete turns, tool calls and subagent
 runs are known-active intervals even when they exceed `TT_IDLE_GAP`. For legacy
 or incomplete lifecycle data, two consecutive beats from the same machine,
-harness, session and directory contribute their difference only when they are
+harness and session contribute their difference only when they are
 no more than `TT_IDLE_GAP` apart (900 seconds by default). A final unmatched
 start never extends to report time, so a killed terminal or crashed harness
 leaves nothing dangling.
@@ -45,25 +47,33 @@ continuation preserves the current turn.
 ```sh
 tt solo      # heading out, leaving a long run going
 tt paired    # back at the keyboard
+tt solo --session abc123  # narrow the transition to one session
+tt solo --all-sessions    # override in-session detection
 ```
 
-Mode is held **per session directory** — the directory an agent was started in —
-so a solo run in one repository and paired work in another record correctly at
-the same time. Two agents started in the same directory share one mode. A
-directory with no mode set reads as `paired`.
+Inside a harness shell (`! tt solo`), the current session id is used when the
+harness exports one. In an ordinary external terminal, mode applies to every
+session whose current directory is the selected path or below it. This means
+`tt solo` at a project root also covers tools that later report a nested working
+directory. `--session ID` narrows the subtree explicitly; `--all-sessions`
+forces path-wide scope. A scope with no explicit mode reads as `paired`; when
+several scopes match, the most recent explicit transition wins.
 
-Mode applies **forward, from the moment you set it**. It does not reach back over
-beats already written. Setting `solo` after a two-hour unattended run does not
-reclassify that run; each beat carries the mode that was in force when it fired.
+Mode applies **forward, from the moment you set it**, and remains sticky until
+the matching `tt paired` or `tt solo` command. The command writes a durable mode
+event, so an active interval is split at the command timestamp even when no hook
+fires at that instant. Setting `solo` after a two-hour unattended run does not
+reclassify that run. Reports classify only the overlap with reconstructed agent
+activity; an hour spent away while the agent is idle does not create an hour of
+solo time.
 
-Submitting a new prompt after a solo run automatically returns that directory to
-`paired` at the prompt timestamp. Codex has no hook for scrolling, focusing the
-composer or beginning to type, so timetrack cannot directly observe when reading
-started. Instead, when a solo `Stop` contains a final assistant message, it
-stores only that message's word count. On the next prompt it estimates reading
-time at 120 words per minute, bounded by both the real Stop-to-prompt gap and ten
-minutes. The rest of the solo gap stays uncounted. Reports show this estimate as
-a disclosed subset of paired time.
+Submitting a prompt does not change mode: forked agents submit prompts too, so it
+is not a reliable human-return signal. Run `tt paired` when you return. Codex has
+no hook for scrolling, focusing the composer or beginning to type, so when a
+solo `Stop` contains a final assistant message, timetrack stores only its word
+count. If the next prompt is explicitly paired, it estimates reading time at 120
+words per minute, bounded by the paired portion of the real Stop-to-prompt gap
+and ten minutes. Reports disclose that estimate as a subset of paired time.
 
 `manual` is not something you set. Every `tt add` row is `manual`, because a span
 you typed in is by definition time no hook was watching.
@@ -230,17 +240,19 @@ machine is not served, and nothing is built for that case.
 
 ```
 tt add PROJECT DURATION [NOTE] [--at 'YYYY-MM-DD HH:MM']
-tt solo [PATH]
-tt paired [PATH]
+tt solo [PATH] [--session ID|--all-sessions]
+tt paired [PATH] [--session ID|--all-sessions]
 ```
 
 `add` records time away from any agent. Duration is `90m`, `1.5h`, `2h30m` or a
 bare number of minutes. `--at` sets the start, and the duration runs forward
 from it. A note longer than one word must be quoted.
 
-`solo` and `paired` say whether the agent started in `PATH` is working without
-you or alongside you. `PATH` defaults to the current directory, and `paired` is
-the default state.
+`solo` and `paired` explicitly mark whether agent activity in the `PATH` subtree
+is running without you or alongside you. `PATH` defaults to the current
+directory, and `paired` is the default state. An in-session shell id narrows the
+command automatically when available. `--session ID` selects one explicitly;
+`--all-sessions` applies to every matching session.
 
 **Read**
 
@@ -256,7 +268,7 @@ unless given a period. `yesterday` covers the complete previous local day;
 an `--until` date includes that entire local day. `--by` accepts `project` or
 `day`, while `--detail` breaks projects out by sub-directory. Run
 `tt report --help` or `tt help report` for the complete report reference.
-`sessions` lists every session directory whose mode has been set, and its mode.
+`sessions` lists every path/session scope whose mode has been set, and its mode.
 
 **Other machines**
 
@@ -313,12 +325,13 @@ the paired total came from solo-output reading estimates.
 
 ```sh
 $ tt sessions
-solo    /home/lan/workspace/sportx
-paired  /home/lan/workspace/stratos
+solo    all          /home/lan/workspace/sportx
+paired  abc123       /home/lan/workspace/stratos
 ```
 
-`tt sessions` lists only directories whose mode was set explicitly. Empty output
-means nothing has been set and everything is reading as `paired`.
+`all` means every session below that path; another value is the explicitly
+targeted session id. Empty output means nothing has been set and everything is
+reading as `paired`.
 
 ### Asking an agent instead
 
@@ -332,7 +345,7 @@ Each machine has two TAB-separated files:
 
 - `events-<machine>.tsv` is the compact history intended for Git. Completed
   local days occupy a few `total` rows per project and mode.
-- `current-<machine>.tsv` contains detailed `beat` and `span` rows for the
+- `current-<machine>.tsv` contains detailed `beat`, `mode`, and `span` rows for the
   current local day. It is gitignored.
 
 On the first hook, manual entry, or report after midnight, `tt` reconstructs the
@@ -352,16 +365,16 @@ iso_start  kind  start  end  machine  harness  mode  project  subpath  session  
 | # | Column | Meaning |
 |---|---|---|
 | 1 | `iso_start` | Local time, formatted when the row was written |
-| 2 | `kind` | `beat` or `span` in current detail |
+| 2 | `kind` | `beat`, `mode`, or `span` in current detail |
 | 3 | `start` | Epoch seconds |
 | 4 | `end` | Epoch seconds; equal to `start` on a beat |
 | 5 | `machine` | `machine=` from config, else the short hostname |
-| 6 | `harness` | `claude`, `codex`, or `-` on a span |
+| 6 | `harness` | `claude`, `codex`, or `-` on a mode/span |
 | 7 | `mode` | `paired`, `solo` or `manual` |
 | 8 | `project` | Top-level directory under `TT_ROOT` |
-| 9 | `subpath` | Remainder of the session directory, or `.` |
-| 10 | `session` | Harness session id, or `-` |
-| 11 | `note` | On a `span`, your free-text note (`-` if none). On a `beat`, the hook event name. |
+| 9 | `subpath` | Remainder of the event's working directory, or `.` |
+| 10 | `session` | Harness session id, or `-` for an all-session scope |
+| 11 | `note` | On a `span`, your free-text note (`-` if none). On a `beat`, the hook event name. `mode` uses `-`. |
 
 New beat rows append six lifecycle fields:
 
@@ -392,9 +405,9 @@ reporting compares and sums integers and behaves identically on Linux and macOS.
 
 ### Attribution
 
-`project` and `subpath` both come from the agent's **session directory** — where
-the agent was started, delivered as `cwd` on hook stdin. An agent started in one
-repository and reading a sibling attributes its time to where it started.
+`project` and `subpath` come from `cwd` on each hook event. A real harness session
+remains one activity timeline when that value changes; the subpath attributes
+sequential pieces for `--detail` instead of creating concurrent copies.
 
 - Under `TT_ROOT`: `project` is the first path segment, `subpath` the rest (or `.`).
 - At `TT_ROOT` itself: `project` is `~root`, `subpath` is `.`.
@@ -439,6 +452,7 @@ of files. `tt sync pull HOST` looks for both `events-HOST.tsv` and
 | `TT_MAX_ACTIVE_GAP` | `3600` | Ceiling on one gap inside an open turn or tool call; `0` removes it |
 | `TT_READING_WPM` | `120` | Personal reading-speed assumption for solo-output estimates; `0` switches the estimate off |
 | `TT_MAX_READING_TIME` | `600` | Maximum seconds added by one solo-output reading estimate |
+| `TT_SESSION_ID` | harness id or `-` | Override the implicit session scope of `solo`/`paired` |
 | `TT_NOW` | — | Override "now" as epoch seconds; used by the tests |
 | `TT_LIB` | `<tt>/../lib` | Where `report.awk` is found |
 | `TT_RSYNC` | `rsync` | The rsync `tt sync pull` invokes |

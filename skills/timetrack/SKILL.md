@@ -43,17 +43,21 @@ that is not `--at` as the note and keeps only the last one, so
 ## Setting mode
 
 `paired` means the user is working alongside the agent. `solo` means the agent is
-running while they are elsewhere. Mode is held per session directory, so running
-these from your own shell keys them to the right session automatically.
+running while they are elsewhere. Mode commands are explicit, timestamped
+signals. The path defaults to the current directory and covers that whole
+subtree, including nested working directories reported later by the same run.
 
     sh "$TT_CMD" solo      # "I'm heading out", "let it run", "going to lunch"
     sh "$TT_CMD" paired    # "I'm back", "watching now"
+    sh "$TT_CMD" solo --session abc123  # narrow to one known session id
 
 Mode applies from that moment forward. It does not reach backwards over work
-already recorded. Submitting a prompt returns that directory to paired on both
-harnesses, because a prompt means the user is back. Setting solo and *then*
-sending the instruction that starts the unattended run therefore cancels itself:
-set solo during the turn that is already running, not before it.
+already recorded, and a prompt never changes it: forked agents submit prompts as
+well, so only `tt paired` reliably says that the user returned. Use the same path
+and optional session scope when returning. An in-session shell id narrows the
+command automatically when the harness exports one; an external terminal has no
+such id and applies to every matching session below the path. Use
+`--all-sessions` to force the latter behavior from inside a harness.
 
 ## Reporting
 
