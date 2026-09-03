@@ -18,9 +18,10 @@ any agent at all.
 
 ## Data model
 
-### Events
+### Current detail and compact totals
 
-One append-only TSV per machine. Every row is one event, of one of two kinds:
+Each machine uses two TSV files. `current-<machine>.tsv` holds detailed rows for
+the current local day. Each detail row is one event, of one of two kinds:
 
 - `beat` — emitted by a harness hook. `start` equals `end`.
 - `span` — a manual entry. `start` and `end` bound a stated duration.
@@ -41,7 +42,7 @@ Columns, in order:
 | 10 | `session` | Harness session id, or `-` |
 | 11 | `note` | Free text, or `-` |
 
-New beat rows append optional lifecycle evidence while the first eleven columns
+New beat rows append optional lifecycle fields while the first eleven columns
 remain stable:
 
 | # | Column | Meaning |
@@ -53,8 +54,19 @@ remain stable:
 | 16 | `assistant_words` | Final assistant-message word count on `Stop`, or `-` |
 | 17 | `session_source` | `SessionStart` source, or `-` |
 
-Manual spans may remain eleven columns. Reports accept old, extended and mixed
-logs without migration. Raw assistant-message content is never persisted.
+Manual spans may remain eleven columns. Raw assistant-message content is never
+persisted.
+
+`events-<machine>.tsv` is the compact history. Its first row has kind `compact`
+and stores the active local-day boundary. Completed days use kind `total`, with
+the day boundaries in columns 3–4, mode/project/subpath in columns 7–9, seconds
+in column 11, and the estimated-reading subset in column 12. There is at most
+one total per day, project, subpath, and mode after a normal rollover.
+
+At the first write or report after midnight, completed detail is reconstructed
+and replaced by totals. Only today's detail and small internal `state` rows
+needed to continue an interval across midnight remain in the current file. A
+legacy single-file event log migrates through the same operation.
 
 Each row carries epoch seconds and a preformatted local timestamp written at
 capture time. Reporting therefore compares and sums integers, and behaves
@@ -96,7 +108,7 @@ time. Two agents started in the same directory share one mode.
 Each beat is stamped with the mode in force at that instant, so a mode changed
 mid-run splits the run at the moment of the change.
 
-`UserPromptSubmit` is the first portable evidence that the user has returned.
+`UserPromptSubmit` is the first portable signal that the user has returned.
 When a directory is solo, that hook changes it to paired before writing the
 prompt beat. Codex exposes no scroll, focus, composer or typing-start hook.
 
@@ -118,8 +130,8 @@ is also disclosed as a non-additive `ESTIMATED` subset in reports.
 Beats group by machine, harness, session and session directory, sorted by start.
 Append order is the numeric tie-breaker for equal-second events. A complete
 `UserPromptSubmit` to `Stop`/`Interrupt` turn counts regardless of
-`TT_IDLE_GAP`; matched tool and subagent lifecycle pairs provide the same
-recovery evidence when a main-turn boundary is absent. Subagent activity shares
+`TT_IDLE_GAP`; matched tool and subagent lifecycle pairs fill the same gap when
+a main-turn boundary is absent. Subagent activity shares
 the parent stream and is not added again when it overlaps the parent turn.
 
 Because known activity ignores `TT_IDLE_GAP`, an ending that was never recorded
@@ -127,10 +139,10 @@ would otherwise count the whole absence that follows it, and no harness
 guarantees an event for every ending — Claude Code records nothing when the user
 interrupts. Three rules bound this. A single gap inside an open turn, tool call
 or subagent run counts at most `TT_MAX_ACTIVE_GAP` (3600 seconds by default),
-counted forward from the beat that proved the activity, so a genuinely long tool
+counted forward from the beat that marked the activity, so a genuinely long tool
 call keeps that much of its length rather than being discarded; `0` removes the
 ceiling. A `UserPromptSubmit` carrying a turn identifier other than the one
-still open closes that turn, because a new prompt proves the previous one ended.
+still open closes that turn, because a new prompt shows the previous one ended.
 A `SessionStart` arriving mid-stream closes everything open when its source is
 `startup`, `resume`, or `clear`, because a resumed session keeps its id and
 rejoins its own stream. Codex also emits `SessionStart` with `source=compact`
@@ -156,11 +168,13 @@ that do not begin at 00:00. Spans contribute their clipped `end - start`.
 
     ~/.timetrack/
       config              # machine= and TT_* preferences
-      events-<machine>.tsv
+      events-<machine>.tsv  # tracked completed-day totals
+      current-<machine>.tsv # gitignored current-day detail and carry state
       modes               # mode<TAB>absolute-path per session directory
 
-A private git repository. Each machine appends only to its own file, so pulls
-and pushes touch disjoint paths.
+A private git repository for the compact files. Current detail, modes, and lock
+directories are gitignored. Each machine writes only its own pair of files, so
+pulls and pushes touch disjoint paths.
 
 Machine identity comes from `machine=` in `config`, falling back to the short
 hostname. Setting it explicitly keeps a renamed machine writing to the same file.
@@ -172,7 +186,7 @@ hostname. Setting it explicitly keeps a renamed machine writing to the same file
     tt solo|paired [path]
     tt sessions
     tt root
-    tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
+    tt report [today|yesterday|week|month] [--since D] [--until D] [--by project|day] [--detail]
     tt sync pull <host>
     tt install-remote <host>
     tt hooks-snippet [claude|codex]
@@ -180,11 +194,21 @@ hostname. Setting it explicitly keeps a renamed machine writing to the same file
 Durations parse as `90m`, `1.5h` or `2h30m`. `tt add` without `--at` ends the
 span at the current time. `tt add` prints the row it wrote.
 
-`tt report` covers today unless given a period.
+`tt report` covers today unless given a period. `yesterday` is the complete
+previous local day; `week` and `month` are week-to-date and month-to-date. Its
+periods and flags are listed by both `tt report --help` and `tt help report`.
 
 `tt report` prints one row per project with paired, solo, manual, estimated and
 total columns. Estimated is a subset of paired, not another additive mode.
-`--detail` breaks projects out by subpath.
+`--detail` breaks projects out by subpath. Buckets below the display's
+one-minute resolution are omitted rather than rendered as all-zero rows.
+
+Automatic rollover keeps storage proportional to the number of daily
+project/mode totals plus at most one local day's detailed hook traffic. The
+compact file also holds the active-day marker, so an ordinary hook checks for a
+rollover without scanning the current file. Rewrites and appends share a
+per-machine POSIX `mkdir` lock. Reconstruction preferences are applied at
+rollover; a later configuration change does not reinterpret completed totals.
 
 ## Hook capture
 
@@ -246,9 +270,9 @@ working directory is the session directory the hook sees, so the key matches.
 
 **Reporting.** Run `tt report` for the period asked about and read the table back.
 
-**Correcting.** The log is plain TSV with a documented schema, so a wrong manual
-entry is a one-line edit. `span` rows may be edited. `beat` rows are captured
-evidence and stay as written.
+**Correcting.** The log is plain TSV with a documented schema. A current-day
+`span` may be edited directly; after rollover, correct the matching compact
+`total` row instead. Beat detail is discarded when its day closes.
 
 Guardrails: log only a duration the user stated or confirmed, treat time coming
 up in conversation as conversation, and always echo the written row.
@@ -258,14 +282,15 @@ up in conversation as conversation, and always echo the written row.
 The mac-mini runs no git and holds no credentials. Both directions cross
 Tailscale SSH, initiated from a trusted machine.
 
-`tt install-remote macmini` rsyncs the plugin directory across and registers it
-as a local marketplace there, the mechanism the `zforge-local` entry already
-uses.
+`tt install-remote macmini` connects over SSH, clones or fast-forwards the public
+plugin repository, writes `machine=macmini`, and prints the local-marketplace
+registration commands for that host.
 
-`tt sync pull macmini` copies `events-macmini.tsv` to the trusted machine, which
-commits and pushes it. One machine owns one file, so the pull is a whole-file
-overwrite and repeats harmlessly. An offline mac-mini fails the pull and keeps
-its data until the next one.
+`tt sync pull macmini` copies both `events-macmini.tsv` and
+`current-macmini.tsv` to the trusted machine. Only the compact file is committed
+and pushed. One machine owns each pair, so the pulls are whole-file overwrites
+and repeat harmlessly. An offline mac-mini fails the pull and keeps its data
+until the next one.
 
 ## Out of scope
 

@@ -1,10 +1,14 @@
 # timetrack Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Status:** Historical initial-build plan. The current two-file storage and
+Codex lifecycle behavior are specified in the design and improvement plan.
+
+> This is retained as the historical initial-build record. Use the current
+> design and improvement plan for subsequent work.
 
 **Goal:** Build `tt`, a dependency-free POSIX shell tool that records per-project time across `~/workspace` from agent-harness hooks and manual entries, separating paired, solo and manual time, and packages itself as a plugin serving Claude Code and Codex.
 
-**Architecture:** One shell script `bin/tt` holds every subcommand; one awk program `lib/report.awk` holds the reporting engine. Harness hooks append single-line "beats" to an append-only per-machine TSV; reporting reconstructs intervals by summing gaps between consecutive beats that fall under an idle threshold. The repository doubles as a dual-manifest plugin so installing it wires the hooks on both harnesses.
+**Architecture:** One shell script `bin/tt` holds every subcommand; one awk program `lib/report.awk` holds the reporting engine. Harness hooks write single-line beats into a current-day file; completed days are reduced to totals in a compact per-machine file. Reporting reads both. The repository doubles as a dual-manifest plugin so installing it wires the hooks on both harnesses.
 
 **Tech Stack:** POSIX `sh`, `awk`, `sed`, `tr`, `date`. No runtime dependency beyond a base Unix userland.
 
@@ -838,7 +842,7 @@ git commit -m "Reconstruct intervals from beats so reports show paired, solo and
 
 ### Task 6: Plugin packaging and empirical harness verification
 
-Wires the hooks into both harnesses and proves, by running them, that beats actually land.
+Wires the hooks into both harnesses and verifies, by running them, that beats actually land.
 
 **Files:**
 - Create: `.claude-plugin/plugin.json`
@@ -1027,10 +1031,10 @@ Read the table back in prose, leading with the number they asked for.
 
 ## Correcting a mistake
 
-The log is a tab-separated file at `~/.timetrack/events-<machine>.tsv`, eleven
-columns: `iso_start, kind, start, end, machine, harness, mode, project, subpath,
-session, note`. Rows with kind `span` are manual entries and may be edited or
-deleted. Rows with kind `beat` are captured evidence: leave them as written.
+Current detail is in `~/.timetrack/current-<machine>.tsv`; completed-day totals
+are in `~/.timetrack/events-<machine>.tsv`. Current manual `span` rows may be
+edited or deleted. After rollover, correct the seconds in the matching compact
+`total` row. Beat detail is discarded automatically after its day closes.
 
 ## Rules
 

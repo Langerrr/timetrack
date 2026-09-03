@@ -61,7 +61,12 @@ tt_fmt() { # epoch format
     || tt_die "cannot format epoch $1"
 }
 
-tt_log_file() { printf '%s/events-%s.tsv\n' "$TT_HOME" "$(tt_machine)"; }
+tt_compact_file() { printf '%s/events-%s.tsv\n' "$TT_HOME" "$(tt_machine)"; }
+tt_current_file() { printf '%s/current-%s.tsv\n' "$TT_HOME" "$(tt_machine)"; }
+
+# New detail is written here. Completed local days are reduced into the
+# companion events file by tt_compact_locked.
+tt_log_file() { tt_current_file; }
 
 # Absolute path without requiring realpath, which macOS lacks by default.
 tt_abs() { # path
@@ -139,6 +144,21 @@ tt_lock() {
 }
 
 tt_unlock() { rmdir "$(tt_lock_dir)" 2>/dev/null || :; }
+
+tt_event_lock_dir() { printf '%s/events-%s.lock\n' "$TT_HOME" "$(tt_machine)"; }
+
+tt_event_lock() {
+  d=$(tt_event_lock_dir)
+  i=0
+  while ! mkdir "$d" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -lt 200 ] || sleep 1
+    [ "$i" -lt 210 ] || return 1
+  done
+  return 0
+}
+
+tt_event_unlock() { rmdir "$(tt_event_lock_dir)" 2>/dev/null || :; }
 
 tt_set_mode() { # mode [path] [quiet]
   m=$1
@@ -340,7 +360,7 @@ cmd_add() {
   row=$(printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\t%s\t.\t-\t%s' \
     "$(tt_iso "$start")" "$start" "$end" "$(tt_machine)" \
     "$(tt_clean "$proj")" "$(tt_clean "$note")")
-  printf '%s\n' "$row" >> "$(tt_log_file)"
+  tt_append_row "$row" "$start" || tt_die "cannot write $(tt_log_file)"
   printf '%s\n' "$row"
 }
 
@@ -388,7 +408,7 @@ cmd_hook() {
   sub=$(printf '%s' "$attrib" | cut -f2)
   mode=$(tt_mode "$cwd")
 
-  # Submitting a prompt is the first portable evidence that the user returned.
+  # Submitting a prompt is the first portable signal that the user returned.
   # Change the directory state before writing the beat so the new turn starts
   # paired. Keep a failed mode write contained: hook capture must still return.
   if [ "$evt" = UserPromptSubmit ] && [ "$mode" = solo ]; then
@@ -399,13 +419,12 @@ cmd_hook() {
     fi
   fi
 
-  mkdir -p "$TT_HOME" 2>/dev/null
-  printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  row=$(printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
     "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
     "$(tt_clean "$turn")" "$(tt_clean "$tool")" "$(tt_clean "$agent")" \
-    "$(tt_clean "$agent_type")" "$words" "$(tt_clean "$session_source")" \
-    >> "$(tt_log_file)" 2>/dev/null
+    "$(tt_clean "$agent_type")" "$words" "$(tt_clean "$session_source")")
+  tt_append_row "$row" "$now" >/dev/null 2>&1 || :
   return 0
 }
 
@@ -449,12 +468,282 @@ tt_day_boundaries() { # since until; writes report-only synthetic rows
   done
 }
 
+# Prefixing with the input sequence gives equal-second events a stable ordering
+# after sort. This is shared by reporting, compaction, and carry-state creation.
+tt_sort_events() {
+  tab=$(printf '\t')
+  awk -F '\t' '{ printf "%d\t%s\n", NR, $0 }' \
+    | sort -t "$tab" -k 4,4n -k 1,1n \
+    | cut -f 2-
+}
+
+# The compactor cannot rely on a pipeline status: POSIX sh reports only the
+# final command, so a failed sort could otherwise look successful and replace
+# the log with incomplete output. Stage and check each step separately.
+tt_sort_file() { # input output
+  sort_input=$1
+  sort_output=$2
+  sort_numbered="$sort_output.numbered"
+  sort_ordered="$sort_output.ordered"
+  sort_tab=$(printf '\t')
+  if ! awk -F '\t' '{ printf "%d\t%s\n", NR, $0 }' "$sort_input" > "$sort_numbered"; then
+    rm -f "$sort_numbered" "$sort_ordered" "$sort_output"
+    return 1
+  fi
+  if ! sort -t "$sort_tab" -k 4,4n -k 1,1n "$sort_numbered" > "$sort_ordered"; then
+    rm -f "$sort_numbered" "$sort_ordered" "$sort_output"
+    return 1
+  fi
+  if ! cut -f 2- "$sort_ordered" > "$sort_output"; then
+    rm -f "$sort_numbered" "$sort_ordered" "$sort_output"
+    return 1
+  fi
+  rm -f "$sort_numbered" "$sort_ordered"
+  return 0
+}
+
+tt_compact_marker() { # compact-file
+  [ -f "$1" ] || return 0
+  awk -F '\t' 'NR == 1 { if ($2 == "compact") print $3; exit }' "$1"
+}
+
+tt_compact_cleanup() {
+  rm -f "$compact_source" "$compact_input" "$compact_sorted" \
+    "$compact_new" "$current_new"
+}
+
+# The caller holds the per-machine event lock. Reconstruct all detail before
+# cutoff, replace it with daily totals, and keep only current-day detail plus a
+# small state snapshot for streams that can still affect a future interval.
+tt_compact_locked() { # cutoff-epoch
+  compact_cutoff=$1
+  tt_ensure_gitignore || return 1
+  compact_file=$(tt_compact_file)
+  current_file=$(tt_current_file)
+  compact_machine=$(tt_machine)
+  compact_source="$TT_HOME/.tt-source-$compact_machine.$$"
+  compact_input="$TT_HOME/.tt-input-$compact_machine.$$"
+  compact_sorted="$TT_HOME/.tt-sorted-$compact_machine.$$"
+  compact_new="$TT_HOME/.tt-compact-$compact_machine.$$"
+  current_new="$TT_HOME/.tt-current-$compact_machine.$$"
+  compact_day=$(tt_fmt "$compact_cutoff" '%Y-%m-%d') || return 1
+  compact_iso=$(tt_iso "$compact_cutoff") || return 1
+  compact_lib=${TT_LIB:-$(tt_self)/../lib}
+
+  [ -f "$compact_file" ] || : > "$compact_file"
+  [ -f "$current_file" ] || : > "$current_file"
+  if ! cat "$compact_file" "$current_file" > "$compact_source"; then
+    tt_compact_cleanup
+    return 1
+  fi
+
+  if ! compact_first=$(awk -F '\t' -v cutoff="$compact_cutoff" '
+    ($2 == "total" && $3 < cutoff) ||
+    (($2 == "beat" || $2 == "span" || $2 == "state") && $3 < cutoff) {
+      at = $3 + 0
+      if (!seen || at < first) { first = at; seen = 1 }
+    }
+    END { if (seen) print first }
+  ' "$compact_source"); then
+    tt_compact_cleanup
+    return 1
+  fi
+
+  if ! printf '%s\tcompact\t%s\t%s\t%s\t-\t-\t-\t-\t-\t-\n' \
+      "$compact_day" "$compact_cutoff" "$compact_cutoff" "$compact_machine" \
+      > "$compact_new"; then
+    tt_compact_cleanup
+    return 1
+  fi
+
+  if [ -n "$compact_first" ]; then
+    compact_since=$(tt_midnight "$compact_first") || {
+      tt_compact_cleanup; return 1;
+    }
+    compact_gap=$(tt_config TT_IDLE_GAP) || compact_gap=''
+    [ -n "${compact_gap:-}" ] || compact_gap=$TT_IDLE_GAP
+    tt_positive_number "$compact_gap" || compact_gap=900
+    compact_wpm=$(tt_reading_wpm)
+    compact_reading=$(tt_max_reading_time)
+    compact_active=$(tt_max_active_gap)
+    if ! cat "$compact_source" > "$compact_input"; then
+      tt_compact_cleanup
+      return 1
+    fi
+    # Include the cutoff boundary so the preceding day's aggregate has its
+    # exact end on 23-, 24-, and 25-hour local days.
+    if ! tt_day_boundaries "$compact_since" "$((compact_cutoff + 1))" >> "$compact_input"; then
+      tt_compact_cleanup
+      return 1
+    fi
+    if ! tt_sort_file "$compact_input" "$compact_sorted"; then
+      tt_compact_cleanup
+      return 1
+    fi
+    if ! awk -v since="$compact_since" -v upto="$compact_cutoff" \
+        -v gap="$compact_gap" -v reading_wpm="$compact_wpm" \
+        -v max_reading="$compact_reading" -v max_active="$compact_active" \
+        -v output_mode=compact -v compact_machine="$compact_machine" \
+        -f "$compact_lib/report.awk" "$compact_sorted" >> "$compact_new"; then
+      tt_compact_cleanup
+      return 1
+    fi
+  fi
+
+  : > "$current_new" || {
+    tt_compact_cleanup; return 1;
+  }
+
+  # Snapshot state at the boundary while still scanning today's retained beats.
+  # The look-ahead records whether a cross-boundary reading estimate was already
+  # folded into the completed day, preventing it from being added twice later.
+  # State rows are compact context, not historical detail.
+  compact_gap=$(tt_config TT_IDLE_GAP) || compact_gap=''
+  [ -n "${compact_gap:-}" ] || compact_gap=$TT_IDLE_GAP
+  tt_positive_number "$compact_gap" || compact_gap=900
+  compact_wpm=$(tt_reading_wpm)
+  compact_reading=$(tt_max_reading_time)
+  compact_active=$(tt_max_active_gap)
+  if ! awk -F '\t' '
+      $2 == "state" || $2 == "state-tool" || $2 == "state-agent" ||
+      $2 == "beat"
+    ' "$compact_source" > "$compact_input"; then
+    tt_compact_cleanup
+    return 1
+  fi
+  if ! tt_sort_file "$compact_input" "$compact_sorted"; then
+    tt_compact_cleanup
+    return 1
+  fi
+  if ! awk -v since=0 -v upto="$compact_cutoff" -v gap="$compact_gap" \
+      -v reading_wpm="$compact_wpm" -v max_reading="$compact_reading" \
+      -v max_active="$compact_active" -v output_mode=state \
+      -v state_at="$compact_cutoff" -f "$compact_lib/report.awk" \
+      "$compact_sorted" >> "$current_new"; then
+    tt_compact_cleanup
+    return 1
+  fi
+
+  # Keep today's beats. A manual span crossing the boundary is clipped so its
+  # completed portion is not counted again at tomorrow's rollover.
+  if ! awk -F '\t' -v OFS='\t' -v cutoff="$compact_cutoff" \
+      -v cutoff_iso="$compact_iso" '
+    $2 == "beat" && $3 >= cutoff { print; next }
+    $2 == "span" && $4 > cutoff {
+      if ($3 < cutoff) { $1 = cutoff_iso; $3 = cutoff }
+      print
+    }
+  ' "$compact_source" >> "$current_new"; then
+    tt_compact_cleanup
+    return 1
+  fi
+
+  # Moving current first keeps all raw source available in the old compact file
+  # if the second move fails during a legacy migration.
+  if ! mv "$current_new" "$current_file"; then
+    tt_compact_cleanup
+    return 1
+  fi
+  if ! mv "$compact_new" "$compact_file"; then
+    tt_compact_cleanup
+    return 1
+  fi
+  tt_compact_cleanup
+  return 0
+}
+
+tt_compact() { # [force]
+  mkdir -p "$TT_HOME" || return 1
+  tt_event_lock || return 1
+  trap 'tt_event_unlock' EXIT HUP INT TERM
+  compact_today=$(tt_midnight "$(tt_now)") || {
+    tt_event_unlock; trap - EXIT HUP INT TERM; return 1;
+  }
+  compact_marker=$(tt_compact_marker "$(tt_compact_file)")
+  if [ "${1:-}" = force ] || [ "$compact_marker" != "$compact_today" ]; then
+    tt_compact_locked "$compact_today" || {
+      tt_event_unlock; trap - EXIT HUP INT TERM; return 1;
+    }
+  fi
+  tt_event_unlock
+  trap - EXIT HUP INT TERM
+  return 0
+}
+
+tt_append_row() { # row start-epoch
+  append_text=$1
+  append_at=$2
+  mkdir -p "$TT_HOME" || return 1
+  tt_event_lock || return 1
+  trap 'tt_event_unlock' EXIT HUP INT TERM
+  if ! printf '%s\n' "$append_text" >> "$(tt_current_file)"; then
+    tt_event_unlock; trap - EXIT HUP INT TERM; return 1
+  fi
+  append_today=$(tt_midnight "$(tt_now)") || {
+    tt_event_unlock; trap - EXIT HUP INT TERM; return 1;
+  }
+  append_marker=$(tt_compact_marker "$(tt_compact_file)")
+  if [ "$append_marker" != "$append_today" ] || [ "$append_at" -lt "$append_today" ]; then
+    tt_compact_locked "$append_today" || {
+      tt_event_unlock; trap - EXIT HUP INT TERM; return 1;
+    }
+  fi
+  tt_event_unlock
+  trap - EXIT HUP INT TERM
+  return 0
+}
+
+tt_ensure_gitignore() {
+  ignore_file="$TT_HOME/.gitignore"
+  ignore_new="$TT_HOME/.tt-ignore.$$"
+  if [ -f "$ignore_file" ]; then ignore_source=$ignore_file
+  else ignore_source=/dev/null
+  fi
+  if ! awk '
+    { print; seen[$0] = 1 }
+    END {
+      if (!seen["modes"]) print "modes"
+      if (!seen["modes.lock/"]) print "modes.lock/"
+      if (!seen["events-*.lock/"]) print "events-*.lock/"
+      if (!seen["current-*.tsv"]) print "current-*.tsv"
+      if (!seen[".tt-*"]) print ".tt-*"
+    }
+  ' "$ignore_source" > "$ignore_new"; then
+    rm -f "$ignore_new"
+    return 1
+  fi
+  mv "$ignore_new" "$ignore_file" || { rm -f "$ignore_new"; return 1; }
+}
+
+cmd_report_help() {
+  cat <<'USAGE'
+Usage: tt report [PERIOD] [OPTIONS]
+
+PERIOD
+  today       today from its first local instant (default)
+  yesterday   the complete previous local day
+  week        this week from Monday through now
+  month       this month from its first local day through now
+
+OPTIONS
+  --since YYYY-MM-DD   start at the first local instant of this date
+  --until YYYY-MM-DD   include this complete local date
+  --by project|day     group by project (default) or local day
+  --detail             break projects out by session sub-directory
+  -h, --help           show this help
+
+ESTIMATED is already included in PAIRED and TOTAL.
+USAGE
+}
+
 cmd_report() {
   now=$(tt_now)
   since=''; upto=$now; byday=0; detail=0
   while [ $# -gt 0 ]; do
     case "$1" in
       today)    since=$(tt_midnight "$now") || exit 1; shift ;;
+      yesterday) upto=$(tt_midnight "$now") || exit 1
+                since=$(tt_midnight "$((upto - 1))") || exit 1; shift ;;
       # Subtracting whole days can land on 23:00 or 01:00 across a DST change,
       # so the result is put back through tt_midnight to reach that day's 00:00.
       week)     mid=$(tt_midnight "$now") || exit 1
@@ -469,9 +758,15 @@ cmd_report() {
                 day_start=$(tt_day_start "$2") || exit 1
                 upto=$(tt_next_midnight "$day_start") || exit 1; shift 2 ;;
       --by)     [ $# -ge 2 ] || tt_die "--by needs project or day"
-                [ "$2" = day ] && byday=1; shift 2 ;;
+                case "$2" in
+                  project) byday=0 ;;
+                  day)     byday=1 ;;
+                  *)       tt_die "--by needs project or day" ;;
+                esac
+                shift 2 ;;
       --detail) detail=1; shift ;;
-      *)        tt_die "unknown report option: $1" ;;
+      -h|--help|help) cmd_report_help; return 0 ;;
+      *)        tt_die "unknown report option: $1 (run 'tt report --help')" ;;
     esac
   done
   [ -n "$since" ] || since=$(tt_midnight "$now") || exit 1
@@ -484,16 +779,18 @@ cmd_report() {
   max_active=$(tt_max_active_gap)
   lib=${TT_LIB:-$(tt_self)/../lib}
 
+  # A report is also a convenient first action after midnight or after an
+  # upgrade from the single-file format.
+  tt_compact || tt_die "cannot compact $(tt_compact_file)"
+
   # Prefix each row with its input sequence before sorting. The sequence is the
   # numeric tie-breaker for equal-second events, preserving append order without
   # relying on sort's implementation-specific final lexical comparison.
-  tab=$(printf '\t')
   {
     cat "$TT_HOME"/events-*.tsv 2>/dev/null
+    cat "$TT_HOME"/current-*.tsv 2>/dev/null
     [ "$byday" -eq 0 ] || tt_day_boundaries "$since" "$upto"
-  } | awk -F '\t' '{ printf "%d\t%s\n", NR, $0 }' \
-    | sort -t "$tab" -k 4,4n -k 1,1n \
-    | cut -f 2- \
+  } | tt_sort_events \
     | awk -v since="$since" -v upto="$upto" -v gap="$gap" \
           -v reading_wpm="$reading_wpm" -v max_reading="$max_reading" \
           -v max_active="$max_active" \
@@ -503,8 +800,11 @@ cmd_report() {
 cmd_init() {
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
   [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n# TT_MAX_ACTIVE_GAP=3600\n# TT_READING_WPM=120 (0 disables the reading estimate)\n# TT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
-  f=$(tt_log_file); [ -f "$f" ] || : > "$f"
+  f=$(tt_compact_file); [ -f "$f" ] || : > "$f"
+  f=$(tt_current_file); [ -f "$f" ] || : > "$f"
   f=$(tt_modes_file); [ -f "$f" ] || : > "$f"
+  tt_ensure_gitignore || tt_die "cannot update $TT_HOME/.gitignore"
+  tt_compact || tt_die "cannot initialise compact log"
   printf 'initialised %s (machine: %s)\n' "$TT_HOME" "$(tt_machine)"
 }
 
@@ -538,18 +838,24 @@ cmd_sync() {
   [ -n "$host" ] || tt_die "usage: tt sync pull HOST"
   tt_host_ok "$host" || tt_bad_host "$host"
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
-  # The whole file is replaced, so repeating a pull changes nothing.
-  ${TT_RSYNC:-rsync} -a "$host:.timetrack/events-$host.tsv" "$TT_HOME/events-$host.tsv"
-  st=$?
-  # ssh reports its own failures as 255 and rsync passes that through, so a
-  # connection problem and a problem at the other end are told apart here
-  # rather than both being reported as an unreachable host.
-  case $st in
-    0)   ;;
-    255) tt_die "could not reach $host" ;;
-    *)   tt_die "reached $host, but events-$host.tsv did not copy (rsync exit $st); check that ~/.timetrack/config on $host says machine=$host" ;;
-  esac
-  printf 'pulled events-%s.tsv\n' "$host"
+  tt_ensure_gitignore || tt_die "cannot update $TT_HOME/.gitignore"
+  # Both whole files are replaced, so repeating a pull changes nothing. The
+  # high-volume current file stays outside Git but is still useful in a report
+  # run on the trusted machine before the remote host reaches midnight.
+  for sync_kind in events current; do
+    ${TT_RSYNC:-rsync} -a \
+      "$host:.timetrack/$sync_kind-$host.tsv" \
+      "$TT_HOME/$sync_kind-$host.tsv"
+    st=$?
+    # ssh reports its own failures as 255 and rsync passes that through, so a
+    # connection problem and a problem at the other end are distinguished.
+    case $st in
+      0)   ;;
+      255) tt_die "could not reach $host" ;;
+      *)   tt_die "reached $host, but $sync_kind-$host.tsv did not copy (rsync exit $st); update timetrack on the host and check that ~/.timetrack/config says machine=$host" ;;
+    esac
+  done
+  printf 'pulled events-%s.tsv and current-%s.tsv\n' "$host" "$host"
 }
 
 cmd_install_remote() {
@@ -599,7 +905,8 @@ EOF
   cat <<EOF
 
 $host now has ~/timetrack-plugin and machine=$host in ~/.timetrack/config, so
-its log is events-$host.tsv and 'tt sync pull $host' finds it.
+its compact and current files use the suffix $host and 'tt sync pull $host'
+finds both.
 
 The clone carries its own marketplace manifest, so it registers as the
 marketplace 'timetrack' holding the plugin 'timetrack'. Both harnesses want the
@@ -642,6 +949,10 @@ cmd_hooks_snippet() {
 }
 
 cmd_help() {
+  if [ "${1:-}" = report ]; then
+    cmd_report_help
+    return 0
+  fi
   cat <<'USAGE'
 tt — per-project time tracking
 
@@ -658,11 +969,11 @@ RECORD
 
 READ
   root               print the configured project root
-  report [today|week|month] [--since D] [--until D]
+  report [today|yesterday|week|month] [--since D] [--until D]
          [--by project|day] [--detail]
-      Time per project, covering today unless given a period. D is
-      YYYY-MM-DD; --until includes that whole local day. ESTIMATED is a
-      subset of PAIRED. --detail breaks projects out by sub-directory.
+      Time per project, covering today unless given a period. Run
+      'tt report --help' for every period and option. ESTIMATED is a
+      subset of PAIRED.
   sessions           session directories whose mode is set, and their modes
 
 OTHER MACHINES
@@ -689,7 +1000,7 @@ case "$sub" in
   init)          cmd_init "$@" ;;
   hook)          (cmd_hook) || true; exit 0 ;;
   add)           cmd_add "$@" ;;
-  help|-h|--help) cmd_help ;;
+  help|-h|--help) cmd_help "$@" ;;
   root)          tt_root ;;
   solo)          tt_set_mode solo "${1:-$PWD}" ;;
   paired)        tt_set_mode paired "${1:-$PWD}" ;;

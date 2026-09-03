@@ -58,6 +58,7 @@ set solo during the turn that is already running, not before it.
 ## Reporting
 
     sh "$TT_CMD" report            # today
+    sh "$TT_CMD" report yesterday
     sh "$TT_CMD" report week
     sh "$TT_CMD" report month
     sh "$TT_CMD" report --since 2026-08-01 --until 2026-08-31
@@ -70,15 +71,14 @@ a disclosed subset and must not be added to `TOTAL` again.
 
 ## Correcting a mistake
 
-The log is a tab-separated file at `~/.timetrack/events-<machine>.tsv`. Manual
-`span` rows retain the original eleven columns. New `beat` rows append
-`turn_id, tool_use_id, agent_id, agent_type, assistant_words, session_source`
-as columns 12–17;
-old eleven-column beats remain valid. Column 11 holds the user's note on a span
-and the hook event name (`SessionStart`, `PreToolUse`, …) on a beat, so never
-read it back as something the user wrote. `assistant_words` is a count; raw
-assistant output is never stored. Span rows may be edited or deleted. Beat rows
-are captured evidence: leave them as written.
+Today's detailed rows are in `~/.timetrack/current-<machine>.tsv`; completed-day
+totals are in `~/.timetrack/events-<machine>.tsv`. A current `span` may be edited
+or deleted. After rollover, correct the seconds in the matching compact `total`
+row instead. Beat detail is temporary and is discarded automatically after its
+local day closes. Column 11 holds the user's note on a current span and the hook
+event name (`SessionStart`, `PreToolUse`, …) on a beat, so never read it back as
+something the user wrote. `assistant_words` is a count; raw assistant output is
+never stored.
 
 ## Rules
 

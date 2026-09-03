@@ -6,7 +6,8 @@ harnesses. It runs as a plugin: once
 installed, hooks in Claude Code and Codex fire on their own and the log fills
 itself. Nothing to start, nothing to stop.
 
-Everything is POSIX shell and `awk`. One append-only TSV per machine.
+Everything is POSIX shell and `awk`. Each machine uses one compact history file
+and one current-day detail file.
 
 ## What it records
 
@@ -143,24 +144,24 @@ sessions, so an agent can call `tt` with no symlink at all.
 tt init
 ```
 
-That writes `~/.timetrack/` with a `config`, an empty `events-<machine>.tsv` and
-an empty `modes` file. To keep the log across machines, make it a git repository
-with a **private** remote:
+That writes `~/.timetrack/` with a `config`, `events-<machine>.tsv` for compact
+daily totals, `current-<machine>.tsv` for today's detail, and a `modes` file. It
+also creates or extends `.gitignore` so current detail and lock directories are
+not committed. To keep the compact history across machines, make the directory
+a git repository with a **private** remote:
 
 ```sh
 git -C ~/.timetrack init -b main
-printf 'modes\nmodes.lock/\n' > ~/.timetrack/.gitignore
 git -C ~/.timetrack remote add origin git@github.com:you/timetrack-log.git
 git -C ~/.timetrack add -A
 git -C ~/.timetrack commit -m "Start the time log"
 ```
 
-`modes` is gitignored on purpose: it is live per-machine state, not history.
-`modes.lock/` is the directory `tt solo` and `tt paired` create to hold the file
-while they rewrite it; it exists only for the length of a write.
+`modes` and `current-*.tsv` are gitignored because they are live per-machine
+state. Lock directories exist only for the length of a write or rollover.
 
-Each machine appends only to its own `events-<machine>.tsv`, so pulls and pushes
-between machines touch disjoint files and never conflict.
+Each machine writes only files carrying its own machine name, so pulls and
+pushes between machines touch disjoint paths and do not conflict.
 
 ## Install on an edge machine
 
@@ -175,9 +176,9 @@ tt install-remote macmini
 
 It **transfers no files**. Over SSH it makes the host clone
 `https://github.com/Langerrr/timetrack.git` into `~/timetrack-plugin`, writes
-`machine=macmini` into the host's `~/.timetrack/config` so its log is named
-`events-macmini.tsv`, and runs `tt init` there. The only fact that travels from
-your machine is the name you log the host under.
+`machine=macmini` into the host's `~/.timetrack/config` so its files end in
+`-macmini.tsv`, and runs `tt init` there. The only fact that travels from your
+machine is the name you log the host under.
 
 It then prints the registration commands, which you run **on the host**, in each
 harness you use there. The clone carries its own marketplace manifest, so it
@@ -196,7 +197,7 @@ at any point. Within that, the first-run clone path is the one that was
 rehearsed. The update path — `git pull --ff-only` against an existing clone — is
 implemented but has never been executed, because the stand-in `git` creates no
 `.git` directory and so the branch was never taken. Treat a re-run as expected
-behaviour rather than proven behaviour: after one, check on the host that the
+behaviour rather than verified behaviour: after one, check on the host that the
 code actually moved.
 
 Whenever new code does reach `~/timetrack-plugin`, uninstall and reinstall the
@@ -211,10 +212,11 @@ happen:
 tt sync pull macmini
 ```
 
-It runs `rsync -a`, which replaces `~/.timetrack/events-macmini.tsv` in full, so
-a repeated pull should change nothing. Nothing is ever pushed from the host —
-there is no code in `tt` that pushes. Like `install-remote`, this has only been
-exercised against a stand-in `rsync`.
+It runs `rsync -a` for both `events-macmini.tsv` and
+`current-macmini.tsv`, replacing each in full, so a repeated pull should change
+nothing. Only the compact file belongs in Git. Nothing is ever pushed from the
+host — there is no code in `tt` that pushes. Like `install-remote`, this has only
+been exercised against a stand-in `rsync`.
 
 **Known limitation:** a host that cannot reach GitHub has no route in.
 `install-remote` provisions by cloning; an air-gapped or network-restricted
@@ -244,14 +246,17 @@ the default state.
 
 ```
 tt root
-tt report [today|week|month] [--since D] [--until D] [--by project|day] [--detail]
+tt report [today|yesterday|week|month] [--since D] [--until D] [--by project|day] [--detail]
 tt sessions
 ```
 
 `root` prints the effective configured project root. `report` covers today
-unless given a period. `D` is `YYYY-MM-DD`, and an `--until` date includes that
-entire local day. `--detail` breaks each project out by sub-directory. `sessions`
-lists every session directory whose mode has been set, and its mode.
+unless given a period. `yesterday` covers the complete previous local day;
+`week` and `month` are week-to-date and month-to-date. `D` is `YYYY-MM-DD`, and
+an `--until` date includes that entire local day. `--by` accepts `project` or
+`day`, while `--detail` breaks projects out by sub-directory. Run
+`tt report --help` or `tt help report` for the complete report reference.
+`sessions` lists every session directory whose mode has been set, and its mode.
 
 **Other machines**
 
@@ -284,6 +289,11 @@ only its last word is kept. `tt add` prints the row it wrote.
 ### Reporting
 
 ```sh
+$ tt report yesterday
+PROJECT     PAIRED      SOLO    MANUAL ESTIMATED     TOTAL
+sportx      1h 12m    0h 00m    0h 00m    0h 00m    1h 12m
+TOTAL       1h 12m    0h 00m    0h 00m    0h 00m    1h 12m
+
 $ tt report today
 PROJECT     PAIRED      SOLO    MANUAL ESTIMATED     TOTAL
 sportx      0h 10m    0h 00m    3h 30m    0h 03m    3h 40m
@@ -318,8 +328,20 @@ hours on sportx for the architecture review", "I'm heading out, let it run", or
 
 ## The log format
 
-`~/.timetrack/events-<machine>.tsv`, one event per line. The first eleven
-TAB-separated columns remain unchanged:
+Each machine has two TAB-separated files:
+
+- `events-<machine>.tsv` is the compact history intended for Git. Completed
+  local days occupy a few `total` rows per project and mode.
+- `current-<machine>.tsv` contains detailed `beat` and `span` rows for the
+  current local day. It is gitignored.
+
+On the first hook, manual entry, or report after midnight, `tt` reconstructs the
+completed day, merges it into the compact file, and removes those detailed rows.
+A small internal `state` row may remain when an interval crosses midnight. An
+old single-file `events-<machine>.tsv` is migrated automatically the first time
+the updated tool writes or reports.
+
+Current detail keeps the original eleven columns:
 
 ```
 iso_start  kind  start  end  machine  harness  mode  project  subpath  session  note
@@ -328,7 +350,7 @@ iso_start  kind  start  end  machine  harness  mode  project  subpath  session  
 | # | Column | Meaning |
 |---|---|---|
 | 1 | `iso_start` | Local time, formatted when the row was written |
-| 2 | `kind` | `beat` or `span` |
+| 2 | `kind` | `beat` or `span` in current detail |
 | 3 | `start` | Epoch seconds |
 | 4 | `end` | Epoch seconds; equal to `start` on a beat |
 | 5 | `machine` | `machine=` from config, else the short hostname |
@@ -354,8 +376,14 @@ Column 11 carries different things by kind, and that is deliberate: a span's not
 is what you said about it, a beat's note is which hook produced it
 (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and
 the other documented lifecycle events). Manual spans and old beats may remain
-eleven columns; reports read old, new and mixed logs without migration. Raw
-assistant-message text is never persisted.
+eleven columns while migration runs. Raw assistant-message text is never
+persisted.
+
+Compact `total` rows reuse the stable project and mode columns. Column 3 is the
+local day's first epoch, column 4 is the next local-day boundary, column 11 is
+the number of seconds for that mode, and column 12 is the estimated-reading
+subset of a paired total. The first `compact` row stores the current local-day
+marker used for a constant-time rollover check.
 
 Every row holds both epoch seconds and a preformatted local timestamp, so
 reporting compares and sums integers and behaves identically on Linux and macOS.
@@ -372,13 +400,19 @@ repository and reading a sibling attributes its time to where it started.
 
 ### Fixing a mistake
 
-Rows with kind `span` are yours; edit or delete them. Rows with kind `beat` are
-captured evidence — leave them as written.
+For today, edit or delete the relevant `span` in `current-<machine>.tsv`. After a
+day has been compacted, correct the seconds in its matching `total` row in
+`events-<machine>.tsv`. Beat detail is temporary implementation data and is
+discarded automatically after the day closes.
 
 ## Configuration
 
 `~/.timetrack/config` is flat `key=value`. Anything already in the environment
 wins over it.
+
+Settings that affect interval reconstruction are applied when a day is
+compacted. Changing them later affects current and future detail, not totals
+already stored for completed days.
 
 ```
 machine=DESKTOP-G7ULRNT
@@ -389,9 +423,9 @@ TT_READING_WPM=120
 TT_MAX_READING_TIME=600
 ```
 
-Setting `machine=` explicitly keeps a renamed machine writing to the same log
-file. `tt sync pull HOST` looks for `events-HOST.tsv`, so a host's `machine=`
-must match the name you pull it by.
+Setting `machine=` explicitly keeps a renamed machine writing to the same pair
+of files. `tt sync pull HOST` looks for both `events-HOST.tsv` and
+`current-HOST.tsv`, so a host's `machine=` must match the name you pull it by.
 
 ### Environment variables
 
@@ -454,10 +488,10 @@ If you would rather wire the hooks by hand than install the plugin,
 3. **Restart the harness.** Hooks are read at session start.
 4. **Look for the log** — `ls ~/.timetrack/`. No file at all means `tt init` was
    never run.
-5. **Check the log directly** — `tail ~/.timetrack/events-*.tsv`. Rows present but
-   an empty report means the beats fall outside the reporting window, or there
-   is neither a complete lifecycle interval nor a legacy pair within
-   `TT_IDLE_GAP`.
+5. **Check today's detail directly** — `tail ~/.timetrack/current-*.tsv`. Rows
+   present but an empty report means there is neither a complete lifecycle
+   interval nor a legacy pair within `TT_IDLE_GAP`. Older totals are in
+   `events-*.tsv`.
 6. **Project reads `~outside`?** The agent was started outside `TT_ROOT`. Set
    `TT_ROOT=` in `~/.timetrack/config`.
 7. **Report reads `0h 00m`?** That is real: a short session produces beats only

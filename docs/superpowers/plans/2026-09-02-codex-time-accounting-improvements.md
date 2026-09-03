@@ -1,24 +1,25 @@
 # Codex Time Tracking Improvement Plan
 
-**Status:** Implemented and reverified on Linux on 2026-09-03 after adding the
-Codex compaction-continuation case. The automated suite, skill validation,
-Claude manifest validation, and a temporary Codex plugin installation pass. A
-macOS run and an interactive Codex hook-trust smoke test remain
-environment-dependent follow-up checks.
+**Status:** Implemented and reverified on Linux on 2026-09-03, including the
+two-file daily compaction and legacy migration. A macOS run and an interactive
+Codex hook-trust smoke test remain environment-dependent follow-up checks.
 
-**Goal:** Keep timetrack's append-only, dependency-free design while making its
-reported time match Codex's actual turn and tool lifecycle, preserving correct
+**Goal:** Keep timetrack dependency-free and small while making its reported
+time match Codex's actual turn and tool lifecycle, preserving correct
 paired/solo attribution across long runs, user returns, date boundaries,
 interruptions, subagents, and bounded reading-time estimates after solo runs.
 
-**Architecture:** Hooks remain evidence capture and never hold an open timer.
+**Architecture:** Hooks record lifecycle events and never hold an open timer.
 New beat rows append Codex lifecycle identifiers after the existing eleven TSV
 columns. Reporting becomes event-aware: complete turns and tool calls establish
-known-active intervals, while the existing idle-gap heuristic is retained only
-where Codex cannot prove activity. A solo `Stop` may also carry only the word
-count of its final assistant message, allowing reporting to reconstruct a
-clearly identified, bounded reading-time estimate when the user next submits a
-prompt. Existing eleven-column logs remain readable.
+known-active intervals, while the existing idle-gap heuristic handles missing
+boundaries. A solo `Stop` may also carry only the word count of its final
+assistant message, allowing reporting to reconstruct a clearly identified,
+bounded reading-time estimate when the user next submits a prompt. Completed
+local days are reduced to daily totals in a tracked compact file; only the
+current day's detailed events and the minimal carry state needed at midnight
+remain in a separate untracked file. Existing eleven-column logs migrate
+automatically and remain readable during the transition.
 
 **Constraints:** Runtime stays POSIX `sh`, `awk`, `sed`, and base Unix tools; no
 daemon, database, `jq`, Python, or platform UI instrumentation. Hooks must stay
@@ -27,7 +28,7 @@ Code session.
 
 ## Agreed tracking semantics
 
-1. `UserPromptSubmit` is the earliest supported proof that the user has
+1. `UserPromptSubmit` is the earliest supported signal that the user has
    returned. If the session directory is currently `solo`, that event
    automatically changes it to `paired` at the submission timestamp. The
    submitted turn is therefore paired unless the user explicitly switches it
@@ -106,7 +107,7 @@ one-minute paired interval reports the minute as solo.
 
 The shared hook file records `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 `PostToolUse`, and `Stop`, but not `Interrupt`, `SessionEnd`, `SubagentStart`, or
-`SubagentStop`. Missing those boundaries loses evidence around interrupted and
+`SubagentStop`. Missing those boundaries loses useful event data around interrupted and
 autonomous work. Codex subagent events use the parent session id, so they need
 their own agent identifiers and must not be summed as independent sessions.
 
@@ -169,7 +170,7 @@ must never be written to the event log.
   observed time.
 - Assert missing/null assistant output produces no estimate, raw output is not
   persisted, estimates clip correctly at report/day boundaries, and reports
-  retain enough provenance to distinguish estimated reading time from observed
+  retain enough classification to distinguish estimated reading time from observed
   and manual time.
 - Assert explicit mode changes split one long turn at the observed beat.
 - Add `Interrupt`, `SessionEnd`, and subagent fixtures; assert terminal tails are
@@ -177,7 +178,7 @@ must never be written to the event log.
 - Run equivalent report cases using old eleven-column rows, new extended rows,
   and a mixed log.
 
-### Task 2: Capture complete Codex lifecycle evidence
+### Task 2: Capture the complete Codex lifecycle
 
 **Files:** `bin/tt`, `hooks/hooks.json`, new `hooks/codex-hooks.json`,
 `.codex-plugin/plugin.json`, tests.
@@ -215,7 +216,7 @@ must never be written to the event log.
 - Track active main turns by `turn_id`, ending them at `Stop` or `Interrupt`.
   Count the full known-active interval regardless of the idle threshold and
   subdivide it at observed mode changes.
-- Match known tool activity by `tool_use_id` as recovery evidence, especially
+- Match known tool activity by `tool_use_id` as a fallback signal, especially
   when a turn lacks its terminal event. Do not double-count tool intervals that
   already sit inside a complete turn.
 - Use `SessionEnd` as a final closing boundary when appropriate. Preserve the
@@ -227,7 +228,7 @@ must never be written to the event log.
 - Retain the beat-gap heuristic for legacy rows and genuinely unknown intervals,
   with the paired/solo between-turn policy defined above.
 - When a prompt follows a solo `Stop` with `assistant_words`, synthesize the
-  bounded reading interval defined above. Mark its provenance as estimated in
+  bounded reading interval defined above. Mark its classification as estimated in
   detailed output while including it in the paired total. Place the estimate
   immediately before the prompt so range clipping and daily grouping remain
   deterministic; never extend it before the recorded `Stop`.
@@ -289,6 +290,38 @@ must never be written to the event log.
   automatic return-to-paired behavior, a long command, interruption, and the
   final report.
 
+### Task 7: Bound storage with automatic daily compaction
+
+**Files:** `bin/tt`, `lib/report.awk`, `tests/run.sh`, `README.md`,
+`docs/superpowers/specs/2026-09-02-timetrack-design.md`,
+`skills/timetrack/SKILL.md`, manifests.
+
+- Use two files per machine: tracked `events-<machine>.tsv` for compacted daily
+  totals and gitignored `current-<machine>.tsv` for current-day detail.
+- Serialize appends and rollover rewrites with a small per-machine POSIX
+  `mkdir` lock so a hook cannot append into a file while it is being replaced.
+- On the first write or report after local midnight, reconstruct every complete
+  day still present as detail, merge it into daily totals by project, subpath,
+  mode, and estimated subset, then atomically replace each output file while
+  holding the shared event lock.
+- Carry only the minimal lifecycle state needed to join an interval across
+  midnight. Do not keep the completed day's raw beats after a successful
+  rollover.
+- Migrate a legacy `events-<machine>.tsv` automatically: completed days become
+  totals and today's raw rows move to `current-<machine>.tsv`.
+- Keep late manual entries useful. A span added for a completed day is folded
+  into that day's totals immediately; a span crossing midnight is split at the
+  true local-day boundary.
+- Teach reports to sum compact total rows alongside current raw events without
+  changing project, detail, day, estimated, or date-range output.
+- Pull both files from remote machines. The compact file remains suitable for a
+  private Git repository while the current detail file stays untracked.
+- Update `tt init` and the setup documentation to ignore `current-*.tsv` and
+  event-lock directories without overwriting a user's existing `.gitignore`.
+- Test legacy migration, rollover idempotence, cross-midnight carry state,
+  late/manual entries, concurrent hook writes, remote transfer, and bounded
+  post-rollover file size.
+
 ## Acceptance criteria
 
 - Existing logs and manual entries continue to report without migration.
@@ -305,11 +338,17 @@ must never be written to the event log.
 - Cross-boundary reports conserve time: the sum of adjacent daily reports equals
   the corresponding combined range, subject only to displayed minute rounding.
 - Same-second mode transitions are deterministic and forward-only.
-- Interrupts and subagents leave enough evidence for bounded, non-duplicated
+- Interrupts and subagents leave enough lifecycle data for bounded, non-duplicated
   reconstruction.
 - Agent-driven logging and reporting work in Codex without a PATH symlink and
   honor configured `TT_ROOT`.
 - Hook failures still cannot block or fail a Codex/Claude Code session.
+- Completed days occupy a bounded number of aggregate rows rather than one row
+  per hook event, and only the current local day's detailed rows remain.
+- Reports before and after compaction return the same second totals; displayed
+  values may differ only by the existing minute-level formatting.
+- The tracked compact file contains no detailed `beat` rows after migration,
+  and the current detail file is ignored by Git.
 
 ## Source note
 
@@ -321,10 +360,11 @@ exposes no focus, scroll, or typing-start event:
 
 ## Verification result
 
-- The complete shell test suite passes, including legacy/mixed log formats,
-  lifecycle reconstruction, same-second ordering, range clipping, solo return,
-  reading estimates, the bundled skill wrapper, and hook failure containment.
-- The current Codex CLI accepts and installs the version 0.3.1 manifest with its
+- All 227 shell checks pass, including legacy/mixed log migration, daily
+  compaction, same-day idempotence, concurrent appends, sort-failure recovery,
+  cross-midnight state, delayed reading estimates, remote two-file sync, the
+  bundled skill wrapper, and hook failure containment.
+- The current Codex CLI accepts and installs the version 0.4.0 manifest with its
   explicit `hooks/codex-hooks.json` path in a temporary Codex home.
 - The skill validator and Claude plugin validator pass. The older standalone
   plugin validator bundled with the local plugin-creation tooling rejects the
