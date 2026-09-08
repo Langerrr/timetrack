@@ -113,13 +113,10 @@ class TestBuildReport(unittest.TestCase):
         values = line[len("sportx"):].split()
         pairs = [" ".join(values[i:i + 2]) for i in range(0, len(values), 2)]
         paired, checkin, manual, effort = pairs[0], pairs[1], pairs[2], pairs[3]
-
-        def secs(text):
-            h, m = text.split()
-            return int(h[:-1]) * 3600 + int(m[:-1]) * 60
-
-        self.assertEqual(secs(paired) + secs(checkin) + secs(manual),
-                         secs(effort))
+        self.assertEqual(paired, "0h 06m")
+        self.assertEqual(checkin, "0h 20m")
+        self.assertEqual(manual, "0h 00m")
+        self.assertEqual(effort, "0h 26m")
 
     def test_rows_outside_the_window_are_excluded(self):
         rows = [prompt(0), prompt(600)]
