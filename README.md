@@ -23,7 +23,7 @@ Reports rebuild intervals from beats. Complete turns, tool calls and subagent
 runs are known-active intervals even when they exceed `TT_IDLE_GAP`. For legacy
 or incomplete lifecycle data, two consecutive beats from the same machine,
 harness and session contribute their difference only when they are
-no more than `TT_IDLE_GAP` apart (900 seconds by default). A final unmatched
+no more than `TT_IDLE_GAP` apart (1800 seconds by default). A final unmatched
 start never extends to report time, so a killed terminal or crashed harness
 leaves nothing dangling.
 
@@ -68,12 +68,15 @@ activity; an hour spent away while the agent is idle does not create an hour of
 solo time.
 
 Submitting a prompt does not change mode: forked agents submit prompts too, so it
-is not a reliable human-return signal. Run `tt paired` when you return. Codex has
-no hook for scrolling, focusing the composer or beginning to type, so when a
-solo `Stop` contains a final assistant message, timetrack stores only its word
-count. If the next prompt is explicitly paired, it estimates reading time at 120
-words per minute, bounded by the paired portion of the real Stop-to-prompt gap
-and ten minutes. Reports disclose that estimate as a subset of paired time.
+is not a reliable human-return signal. Run `tt paired` when you return. Neither
+Claude Code nor Codex has a hook for scrolling, focusing the composer or
+beginning to type, so when a solo `Stop` contains a final assistant message,
+timetrack stores only its word count. The next prompt on that stream gets a
+reading-time estimate at 120 words per minute, capped at ten minutes and by the
+real Stop-to-prompt gap — whether or not mode was flipped back to `paired`
+first. An explicit `tt paired` inside that gap still narrows the estimate to
+start no earlier than the moment you set it. Reports disclose that estimate as
+a subset of paired time.
 
 `manual` is not something you set. Every `tt add` row is `manual`, because a span
 you typed in is by definition time no hook was watching.
@@ -432,7 +435,7 @@ already stored for completed days.
 ```
 machine=DESKTOP-G7ULRNT
 TT_ROOT=/home/lan/workspace
-TT_IDLE_GAP=900
+TT_IDLE_GAP=1800
 TT_MAX_ACTIVE_GAP=3600
 TT_READING_WPM=120
 TT_MAX_READING_TIME=600
@@ -448,7 +451,7 @@ of files. `tt sync pull HOST` looks for both `events-HOST.tsv` and
 |---|---|---|
 | `TT_HOME` | `~/.timetrack` | Where the log, config and modes live |
 | `TT_ROOT` | `~/workspace` | The root that project names are taken under |
-| `TT_IDLE_GAP` | `900` | Seconds between beats that still count as continuous |
+| `TT_IDLE_GAP` | `1800` | Seconds between beats that still count as continuous |
 | `TT_MAX_ACTIVE_GAP` | `3600` | Ceiling on one gap inside an open turn or tool call; `0` removes it |
 | `TT_READING_WPM` | `120` | Personal reading-speed assumption for solo-output estimates; `0` switches the estimate off |
 | `TT_MAX_READING_TIME` | `600` | Maximum seconds added by one solo-output reading estimate |

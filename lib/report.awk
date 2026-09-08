@@ -287,14 +287,16 @@ $2 != "beat" { next }
         !ids_match(active_turn[stream], turn))
       known_active = 0
 
-    # Stop ends known activity. Only a timely paired Stop-to-prompt gap is
-    # inferred as review/composition; a solo return is handled by its bounded
-    # estimate below, and other post-Stop gaps remain idle.
+    # Stop ends known activity from the turn itself. Only a timely paired
+    # Stop-to-prompt gap is inferred as review/composition; a solo return is
+    # handled by its bounded estimate below. A subagent whose own Stop lands
+    # after the parent turn's Stop was still genuinely running, so that one
+    # gap stays known-active; any other post-Stop gap remains idle.
     if (previous_event[stream] == "Stop") {
       inferred = (event == "UserPromptSubmit" &&
                   previous_mode[stream] == "paired" &&
                   !(stream in pending_stop) && elapsed <= gap)
-      known_active = 0
+      known_active = (event == "SubagentStop")
     } else {
       inferred = (elapsed <= gap)
     }
@@ -319,9 +321,10 @@ $2 != "beat" { next }
   delete state_floor[stream]
 
   # A reading estimate is created only when the very next event on this stream
-  # is the user's return. This prevents overlap with later observed activity.
-  if (event == "UserPromptSubmit" && mode == "paired" &&
-      stream in pending_stop) {
+  # is the user's return. This prevents overlap with later observed activity,
+  # and fires whether or not mode was flipped back to paired first -- reading
+  # the output is what makes the return paired, not the registry catching up.
+  if (event == "UserPromptSubmit" && stream in pending_stop) {
     elapsed = at - pending_stop[stream]
     if (elapsed > 0 && reading_wpm > 0 &&
         pending_words[stream] ~ /^[0-9]+$/ && pending_words[stream] > 0) {

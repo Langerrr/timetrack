@@ -478,7 +478,7 @@ clear_logs
 beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 240
 beatx 1900000480 solo sportx . s1 UserPromptSubmit turn-2 - - - -
 OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "no events in range" "$OUT" 'a prompt that remains explicitly solo creates no paired estimate'
+assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a return that stays explicitly solo still earns the reading estimate'
 
 clear_logs
 beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 600
@@ -537,6 +537,23 @@ beatx 1900001900 paired sportx . s1 SubagentStop turn-1 - agent-1 worker -
 beatx 1900002000 paired sportx . s1 Stop turn-1 - - - 1
 OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
 assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'subagent work overlapping its parent counts once'
+
+# A background subagent can still be running when the parent turn's Stop fires.
+# Its own Stop arriving afterward is proof the gap was genuinely active, so
+# that one gap counts even though Stop otherwise ends known activity.
+clear_logs
+beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
+beatx 1900000060 paired sportx . s1 SubagentStart turn-1 - agent-1 worker -
+beatx 1900000120 paired sportx . s1 Stop turn-1 - - - 1
+beatx 1900000300 paired sportx . s1 SubagentStop turn-1 - agent-1 worker -
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "0h 05m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a subagent stop arriving after the parent Stop still counts that gap'
+
+clear_logs
+beatx 1900000000 paired sportx . s1 Stop turn-1 - - - 1
+beatx 1900000300 paired sportx . s1 Notification turn-1 - - - -
+OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
+assert_eq "no events in range" "$OUT" 'an unrelated event after Stop still stays idle'
 
 # Top-level sessions remain additive, legacy rows stay readable, and old/new
 # rows can share one stream without migration.

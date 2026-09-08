@@ -4,7 +4,7 @@ set -u
 
 TT_HOME=${TT_HOME:-$HOME/.timetrack}
 TT_ROOT=${TT_ROOT:-$HOME/workspace}
-TT_IDLE_GAP=${TT_IDLE_GAP:-900}
+TT_IDLE_GAP=${TT_IDLE_GAP:-1800}
 TT_READING_WPM_SET=${TT_READING_WPM+x}
 TT_MAX_READING_TIME_SET=${TT_MAX_READING_TIME+x}
 TT_MAX_ACTIVE_GAP_SET=${TT_MAX_ACTIVE_GAP+x}
@@ -714,7 +714,7 @@ tt_compact_locked() { # cutoff-epoch
     }
     compact_gap=$(tt_config TT_IDLE_GAP) || compact_gap=''
     [ -n "${compact_gap:-}" ] || compact_gap=$TT_IDLE_GAP
-    tt_positive_number "$compact_gap" || compact_gap=900
+    tt_positive_number "$compact_gap" || compact_gap=1800
     compact_wpm=$(tt_reading_wpm)
     compact_reading=$(tt_max_reading_time)
     compact_active=$(tt_max_active_gap)
@@ -760,7 +760,7 @@ tt_compact_locked() { # cutoff-epoch
   # State rows are compact context, not historical detail.
   compact_gap=$(tt_config TT_IDLE_GAP) || compact_gap=''
   [ -n "${compact_gap:-}" ] || compact_gap=$TT_IDLE_GAP
-  tt_positive_number "$compact_gap" || compact_gap=900
+  tt_positive_number "$compact_gap" || compact_gap=1800
   compact_wpm=$(tt_reading_wpm)
   compact_reading=$(tt_max_reading_time)
   compact_active=$(tt_max_active_gap)
@@ -965,7 +965,7 @@ cmd_report() {
 
   gap=$(tt_config TT_IDLE_GAP) || gap=''
   [ -n "${gap:-}" ] || gap=$TT_IDLE_GAP
-  tt_positive_number "$gap" || gap=900
+  tt_positive_number "$gap" || gap=1800
   reading_wpm=$(tt_reading_wpm)
   max_reading=$(tt_max_reading_time)
   max_active=$(tt_max_active_gap)
@@ -991,7 +991,7 @@ cmd_report() {
 
 cmd_init() {
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
-  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=900\n# TT_MAX_ACTIVE_GAP=3600\n# TT_READING_WPM=120 (0 disables the reading estimate)\n# TT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
+  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=1800\n# TT_MAX_ACTIVE_GAP=3600\n# TT_READING_WPM=120 (0 disables the reading estimate)\n# TT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
   f=$(tt_compact_file); [ -f "$f" ] || : > "$f"
   f=$(tt_current_file); [ -f "$f" ] || : > "$f"
   f=$(tt_modes_file); [ -f "$f" ] || : > "$f"
