@@ -505,9 +505,8 @@ hook_json s2 SessionEnd "" | sh "$TT" hook
 hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT" hook
 assert_eq "trigger" "$(tail -1 "$CUR" | cut -f19)" 'SessionEnd clears the recorded trigger'
 
-assert_eq "trigger" "$(TT_SOLO_COMMANDS=deploy sh -c "$(hook_json s3 UserPromptSubmit '/deploy now')" >/dev/null 2>&1; \
-  printf '%s' "$(TT_SOLO_COMMANDS=deploy; export TT_SOLO_COMMANDS; hook_json s3 UserPromptSubmit '/deploy now' | sh "$TT" hook; tail -1 "$CUR" | cut -f19)")" \
-  'the trigger list is configurable'
+hook_json s3 UserPromptSubmit "/deploy now" | TT_SOLO_COMMANDS=deploy sh "$TT" hook
+assert_eq "trigger" "$(tail -1 "$CUR" | cut -f19)" 'the trigger list is configurable'
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -630,7 +629,9 @@ git commit -m "Record tool names and classify submitted prompts"
 
 **Interfaces:**
 - Consumes: `Row` from `ttreport.events`.
-- Produces: `ModeTimeline` with `ModeTimeline.from_rows(rows: Iterable[Row]) -> ModeTimeline` and `timeline.at(stream: Tuple[str, str, str], when: int) -> str` returning `"paired"` or `"solo"`.
+- Produces: `ModeTimeline` with `ModeTimeline.from_rows(rows: Iterable[Row]) -> ModeTimeline` and `timeline.at(stream: Tuple[str, str, str], when: int, project: str, subpath: str) -> str` returning `"paired"` or `"solo"`.
+
+The stream key collapses to a session id when one exists, which discards the path. A path-scoped transition needs the path, so `at` takes `project` and `subpath` explicitly rather than trying to recover them from the key.
 
 A `mode` row applies forward from its timestamp to every stream it covers: the same machine, and either the same session id or — when the mode row names no session — any stream whose project and subpath sit at or below the mode row's path. A stream with no transition reads as `paired`.
 
@@ -659,40 +660,44 @@ def beat(at, project, subpath, session):
 
 class TestModeTimeline(unittest.TestCase):
     def setUp(self):
-        self.stream = beat(0, "sportx", ".", "s1").stream
+        self.row = beat(0, "sportx", ".", "s1")
+
+    def at(self, timeline, when, row=None):
+        row = row or self.row
+        return timeline.at(row.stream, when, row.project, row.subpath)
 
     def test_default_is_paired(self):
         t = ModeTimeline.from_rows([])
-        self.assertEqual(t.at(self.stream, 100), "paired")
+        self.assertEqual(self.at(t, 100), "paired")
 
     def test_transition_applies_forward_only(self):
         t = ModeTimeline.from_rows([mode_row(100, "solo", "sportx", ".", "s1")])
-        self.assertEqual(t.at(self.stream, 99), "paired")
-        self.assertEqual(t.at(self.stream, 100), "solo")
-        self.assertEqual(t.at(self.stream, 5000), "solo")
+        self.assertEqual(self.at(t, 99), "paired")
+        self.assertEqual(self.at(t, 100), "solo")
+        self.assertEqual(self.at(t, 5000), "solo")
 
     def test_later_transition_wins(self):
         t = ModeTimeline.from_rows([
             mode_row(100, "solo", "sportx", ".", "s1"),
             mode_row(200, "paired", "sportx", ".", "s1"),
         ])
-        self.assertEqual(t.at(self.stream, 150), "solo")
-        self.assertEqual(t.at(self.stream, 250), "paired")
+        self.assertEqual(self.at(t, 150), "solo")
+        self.assertEqual(self.at(t, 250), "paired")
 
     def test_session_scoped_transition_does_not_reach_another_session(self):
-        other = beat(0, "sportx", ".", "s2").stream
+        other = beat(0, "sportx", ".", "s2")
         t = ModeTimeline.from_rows([mode_row(100, "solo", "sportx", ".", "s1")])
-        self.assertEqual(t.at(other, 150), "paired")
+        self.assertEqual(self.at(t, 150, other), "paired")
 
     def test_pathwide_transition_reaches_every_session_below_it(self):
         nested = beat(0, "sportx", "saas-backend", "s2")
         t = ModeTimeline.from_rows([mode_row(100, "solo", "sportx", ".", "-")])
-        self.assertEqual(t.at(nested.stream, 150), "solo")
+        self.assertEqual(self.at(t, 150, nested), "solo")
 
     def test_pathwide_transition_does_not_reach_a_sibling_project(self):
         sibling = beat(0, "tuurny", ".", "s3")
         t = ModeTimeline.from_rows([mode_row(100, "solo", "sportx", ".", "-")])
-        self.assertEqual(t.at(sibling.stream, 150), "paired")
+        self.assertEqual(self.at(t, 150, sibling), "paired")
 
 
 if __name__ == "__main__":
@@ -744,8 +749,8 @@ class ModeTimeline(object):
         transitions.sort(key=lambda r: r.start)
         return cls(transitions)
 
-    def at(self, stream, when):
-        # type: (Tuple[str, str, str], int) -> str
+    def at(self, stream, when, project, subpath):
+        # type: (Tuple[str, str, str], int, str, str) -> str
         machine, _harness, key = stream
         mode = PAIRED
         for row in self._transitions:
@@ -756,10 +761,8 @@ class ModeTimeline(object):
             if row.session not in ("-", ""):
                 if row.session != key:
                     continue
-            else:
-                project, _, subpath = key.partition("/")
-                if not _covers(row, project, subpath or "."):
-                    continue
+            elif not _covers(row, project, subpath):
+                continue
             mode = row.mode if row.mode in (PAIRED, SOLO) else mode
         return mode
 ```
@@ -1137,25 +1140,26 @@ class TestPairedEffort(unittest.TestCase):
 
 
 class TestSoloEffort(unittest.TestCase):
-    def test_a_single_checkin_credits_the_window(self):
-        e = run([mode_row(0, "solo"), prompt(5000)])
-        # The mode row is itself a heartbeat at t=0, in paired mode, and the
-        # prompt at 5000 is the only solo heartbeat.
-        checkin = [s for s in spans_of(e.checkin)]
-        self.assertEqual(total(checkin), WINDOW)
+    # `tt solo` is itself a moment of presence, so the mode row is a heartbeat
+    # and opens an episode of its own. Every expectation below therefore
+    # carries one window for the mode row plus whatever the prompts add.
 
-    def test_two_prompts_ten_minutes_apart_credit_thirty_minutes(self):
+    def test_a_single_checkin_credits_one_window(self):
+        e = run([mode_row(0, "solo"), prompt(5000)])
+        self.assertEqual(total(union(spans_of(e.checkin))), 2 * WINDOW)
+
+    def test_two_prompts_ten_minutes_apart_credit_their_span_plus_a_window(self):
         e = run([mode_row(0, "solo"), prompt(5000), prompt(5600)])
-        self.assertEqual(total(union(spans_of(e.checkin))), 600 + WINDOW)
+        self.assertEqual(total(union(spans_of(e.checkin))), 600 + 2 * WINDOW)
 
     def test_prompts_far_apart_form_separate_episodes(self):
         e = run([mode_row(0, "solo"), prompt(5000), prompt(50000)])
-        self.assertEqual(total(union(spans_of(e.checkin))), 2 * WINDOW)
+        self.assertEqual(total(union(spans_of(e.checkin))), 3 * WINDOW)
 
-    def test_an_eight_hour_run_with_no_checkin_credits_nothing(self):
+    def test_an_eight_hour_run_credits_the_checkin_not_the_run(self):
         e = run([mode_row(0, "solo"), prompt(28800)])
-        # One heartbeat, one episode, one window -- not eight hours.
-        self.assertEqual(total(union(spans_of(e.checkin))), WINDOW)
+        # Two heartbeats, two episodes, two windows -- not eight hours.
+        self.assertEqual(total(union(spans_of(e.checkin))), 2 * WINDOW)
 
 
 class TestManualEffort(unittest.TestCase):
@@ -1241,7 +1245,7 @@ def effort_spans(rows, timeline, presence_gap, checkin_window):
                              last.start + half_window)))
 
         for index, row in enumerate(beats):
-            mode = timeline.at(stream, row.start)
+            mode = timeline.at(stream, row.start, row.project, row.subpath)
             if mode == SOLO:
                 if episode and row.start - episode[-1].start > checkin_window:
                     flush(episode)
@@ -1253,7 +1257,7 @@ def effort_spans(rows, timeline, presence_gap, checkin_window):
             if index + 1 >= len(beats):
                 continue
             nxt = beats[index + 1]
-            if timeline.at(stream, nxt.start) == SOLO:
+            if timeline.at(stream, nxt.start, nxt.project, nxt.subpath) == SOLO:
                 continue
             elapsed = nxt.start - row.start
             if elapsed <= 0:
@@ -1648,7 +1652,7 @@ tt_checkin_window() {
 }
 ```
 
-Add `tt_day_boundary_epochs`, which prints one epoch per local midnight in the window. It replaces the `boundary`-row emitter `tt_day_boundaries`, which is deleted:
+Add `tt_day_boundary_epochs`, which prints one epoch per local midnight in the window. Leave the existing `boundary`-row emitter `tt_day_boundaries` in place — `tt_compact_locked` still runs through `report.awk` until Task 9 and needs it. Task 9 deletes it.
 
 ```sh
 tt_day_boundary_epochs() { # since upto
@@ -1838,7 +1842,46 @@ def compact(rows, cutoff, options):
     return (history, carry)
 ```
 
-In `bin/tt`, replace the body of `tt_compact_locked` so it pipes the sorted log through `python3 -m ttreport.compact` rather than `report.awk`, writing history and carry to temporary files and validating both are non-empty-or-expected before replacing the real files. Keep the existing lock, the existing temp-file-then-`mv` sequence and the existing validation; only the producer changes.
+Add a CLI to `compact.py` so `bin/tt` can invoke it as a module:
+
+```python
+def main(argv=None, stdin=None):
+    import argparse
+    import sys
+
+    from .events import parse_stream
+
+    parser = argparse.ArgumentParser(prog="ttreport.compact")
+    parser.add_argument("--cutoff", type=int, required=True)
+    parser.add_argument("--carry", required=True,
+                        help="path to write the carried-forward rows")
+    parser.add_argument("--presence-gap", type=int, default=3600)
+    parser.add_argument("--checkin-window", type=int, default=1200)
+    parser.add_argument("--max-active", type=int, default=3600)
+    parser.add_argument("--boundary", type=int, action="append", default=[])
+    args = parser.parse_args(argv)
+
+    rows = parse_stream(stdin or sys.stdin)
+    options = Options(
+        since=0, upto=args.cutoff, byday=True, detail=True,
+        boundaries=args.boundary, presence_gap=args.presence_gap,
+        checkin_window=args.checkin_window, max_active=args.max_active,
+    )
+    history, carry = compact(rows, args.cutoff, options)
+    with open(args.carry, "w") as handle:
+        for line in carry:
+            handle.write(line + "\n")
+    for line in history:
+        sys.stdout.write(line + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
+```
+
+In `bin/tt`, replace the body of `tt_compact_locked` so it pipes the sorted log through `python3 -m ttreport.compact` rather than `report.awk`, writing history and carry to temporary files and validating both are non-empty-or-expected before replacing the real files. Keep the existing lock, the existing temp-file-then-`mv` sequence and the existing validation; only the producer changes. Delete `tt_day_boundaries`, whose last caller goes away with `report.awk`'s compact mode; pass `--boundary` values from `tt_day_boundary_epochs` instead.
 
 - [ ] **Step 4: Run test to verify it passes**
 
