@@ -30,6 +30,30 @@ def total(spans):
     return sum(end - start for start, end in spans if end > start)
 
 
+def subtract(spans, remove):
+    # type: (Sequence[Span], Sequence[Span]) -> List[Span]
+    """spans and remove are each already sorted and internally disjoint
+    (each the output of union()). Removes every second `remove` covers."""
+    if not remove:
+        return list(spans)
+    out = []  # type: List[Span]
+    for start, end in spans:
+        cursor = start
+        for rstart, rend in remove:
+            if rend <= cursor:
+                continue
+            if rstart >= end:
+                break
+            if rstart > cursor:
+                out.append((cursor, rstart))
+            cursor = max(cursor, rend)
+            if cursor >= end:
+                break
+        if cursor < end:
+            out.append((cursor, end))
+    return out
+
+
 def clip(spans, since, upto):
     # type: (Iterable[Span], int, int) -> List[Span]
     out = []

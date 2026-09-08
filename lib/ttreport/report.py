@@ -16,12 +16,23 @@ from typing import Dict, Iterable, List, NamedTuple
 
 from .effort import effort_spans
 from .events import Row
-from .intervals import Span, clip, split_days, total, union
+from .intervals import Span, clip, split_days, subtract, total, union
 from .machine import machine_spans
 from .modes import ModeTimeline
 
 COLUMNS = ("PAIRED", "CHECKIN", "MANUAL", "EFFORT", "AGENT", "TOOL")
 EFFORT_PRIORITY = ("PAIRED", "CHECKIN", "MANUAL")
+
+# A compacted day's category (compact.py writes these, lowercase, into a
+# total row's column 7 -- old rows normalize to the same names in events.py)
+# maps onto the table column it contributes to.
+CATEGORY_COLUMNS = {
+    "paired": "PAIRED",
+    "checkin": "CHECKIN",
+    "manual": "MANUAL",
+    "agent": "AGENT",
+    "tool": "TOOL",
+}
 
 
 class Options(NamedTuple):
@@ -62,30 +73,6 @@ def _collect(entries, options):
     return out
 
 
-def _subtract(spans, remove):
-    # type: (List[Span], List[Span]) -> List[Span]
-    """spans and remove are each already sorted and internally disjoint
-    (the output of union()). Removes every second `remove` covers."""
-    if not remove:
-        return list(spans)
-    out = []  # type: List[Span]
-    for start, end in spans:
-        cursor = start
-        for rstart, rend in remove:
-            if rend <= cursor:
-                continue
-            if rstart >= end:
-                break
-            if rstart > cursor:
-                out.append((cursor, rstart))
-            cursor = max(cursor, rend)
-            if cursor >= end:
-                break
-        if cursor < end:
-            out.append((cursor, end))
-    return out
-
-
 def _disjoint_effort(collected, key):
     # type: (Dict[str, Dict[str, List[Span]]], str) -> Dict[str, List[Span]]
     """Priority order PAIRED > CHECKIN > MANUAL: each category keeps only
@@ -94,10 +81,41 @@ def _disjoint_effort(collected, key):
     disjoint = {}  # type: Dict[str, List[Span]]
     for name in EFFORT_PRIORITY:
         spans = union(collected[name].get(key, []))
-        remaining = _subtract(spans, claimed)
+        remaining = subtract(spans, claimed)
         disjoint[name] = remaining
         claimed = union(claimed + remaining)
     return disjoint
+
+
+def _total_key(row, options):
+    # type: (Row, Options) -> str
+    if options.byday:
+        return time.strftime("%Y-%m-%d", time.localtime(row.start))
+    return _bucket(row.project, row.subpath, options)
+
+
+def _collect_totals(rows, options):
+    # type: (Iterable[Row], Options) -> Dict[str, Dict[str, int]]
+    """A compacted day contributes a pre-summed, already-disjoint total
+    straight to its bucket -- it carries no spans left to union or clip."""
+    out = {}  # type: Dict[str, Dict[str, int]]
+    for row in rows:
+        if row.kind != "total":
+            continue
+        if row.start >= options.upto or row.end <= options.since:
+            continue
+        column = CATEGORY_COLUMNS.get(row.mode)
+        if column is None:
+            continue
+        try:
+            seconds = int(row.words)
+        except ValueError:
+            continue
+        if seconds <= 0:
+            continue
+        bucket = out.setdefault(_total_key(row, options), {})
+        bucket[column] = bucket.get(column, 0) + seconds
+    return out
 
 
 def build_report(rows, options):
@@ -117,10 +135,12 @@ def build_report(rows, options):
     }
     collected = {name: _collect(entries, options)
                  for name, entries in sources.items()}
+    totals = _collect_totals(rows, options)
 
     keys = set()
     for buckets in collected.values():
         keys.update(buckets)
+    keys.update(totals)
 
     table = {}  # type: Dict[str, Dict[str, int]]
     for key in keys:
@@ -130,6 +150,9 @@ def build_report(rows, options):
             cells[name] = total(disjoint[name])
         for name in ("AGENT", "TOOL"):
             cells[name] = total(collected[name].get(key, []))
+        extra = totals.get(key, {})
+        for name in ("PAIRED", "CHECKIN", "MANUAL", "AGENT", "TOOL"):
+            cells[name] += extra.get(name, 0)
         cells["EFFORT"] = cells["PAIRED"] + cells["CHECKIN"] + cells["MANUAL"]
         if any(cells[name] for name in COLUMNS):
             table[key] = cells

@@ -1,5 +1,5 @@
 import unittest
-from ttreport.intervals import union, total, clip, split_days
+from ttreport.intervals import union, total, clip, split_days, subtract
 
 
 class TestUnion(unittest.TestCase):
@@ -71,6 +71,26 @@ class TestSplitDays(unittest.TestCase):
 
     def test_no_boundaries_yields_nothing(self):
         self.assertEqual(split_days([(0, 10)], []), [])
+
+
+class TestSubtract(unittest.TestCase):
+    def test_nothing_to_remove_returns_the_spans_unchanged(self):
+        self.assertEqual(subtract([(0, 10)], []), [(0, 10)])
+
+    def test_a_fully_covering_remove_empties_the_span(self):
+        self.assertEqual(subtract([(0, 10)], [(0, 10)]), [])
+
+    def test_a_middle_bite_splits_the_span_in_two(self):
+        self.assertEqual(subtract([(0, 10)], [(4, 6)]), [(0, 4), (6, 10)])
+
+    def test_a_disjoint_remove_leaves_the_span_untouched(self):
+        self.assertEqual(subtract([(0, 10)], [(20, 30)]), [(0, 10)])
+
+    def test_several_removes_each_take_their_own_bite(self):
+        self.assertEqual(
+            subtract([(0, 20)], [(2, 4), (10, 12)]),
+            [(0, 2), (4, 10), (12, 20)],
+        )
 
 
 if __name__ == "__main__":

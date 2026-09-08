@@ -146,5 +146,76 @@ class TestBuildReport(unittest.TestCase):
         self.assertLess(out.index(early_label), out.index(late_label))
 
 
+class TestBuildReportReadsTotalRows(unittest.TestCase):
+    def new_total(self, category, seconds, day=0, day_end=86400,
+                 project="sportx", subpath="."):
+        return parse_line("\t".join([
+            "-", "total", str(day), str(day_end), "-", "-", category,
+            project, subpath, "-", "-", "-", "-", "-", "-", str(seconds),
+            "-", "-", "-", "-",
+        ]))
+
+    def old_total(self, mode, seconds, project="sportx", subpath="."):
+        return parse_line("\t".join([
+            "i", "total", "0", "86400", "m1", "-", mode, project, subpath,
+            "-", str(seconds), "0",
+        ]))
+
+    def test_a_new_format_total_row_is_counted(self):
+        rows = [self.new_total("paired", 600)]
+        out = build_report(rows, options())
+        line = [l for l in out.splitlines() if l.startswith("sportx")][0]
+        pairs = [" ".join(line[len("sportx"):].split()[i:i + 2])
+                for i in range(0, 12, 2)]
+        self.assertEqual(pairs[0], "0h 10m")   # PAIRED
+        self.assertEqual(pairs[3], "0h 10m")   # EFFORT
+
+    def test_an_old_format_total_row_is_counted(self):
+        # Reproduces the regression this task fixes: compacted heartbeats
+        # used to vanish from the report entirely.
+        rows = [self.old_total("paired", 600)]
+        out = build_report(rows, options())
+        line = [l for l in out.splitlines() if l.startswith("sportx")][0]
+        pairs = [" ".join(line[len("sportx"):].split()[i:i + 2])
+                for i in range(0, 12, 2)]
+        self.assertEqual(pairs[0], "0h 10m")
+        self.assertNotIn("0h 00m", pairs[0])
+
+    def test_an_old_solo_total_row_lands_on_agent(self):
+        rows = [self.old_total("solo", 300)]
+        out = build_report(rows, options())
+        line = [l for l in out.splitlines() if l.startswith("sportx")][0]
+        pairs = [" ".join(line[len("sportx"):].split()[i:i + 2])
+                for i in range(0, 12, 2)]
+        self.assertEqual(pairs[4], "0h 05m")   # AGENT
+        self.assertEqual(pairs[0], "0h 00m")   # PAIRED unaffected
+
+    def test_historical_totals_and_live_rows_add_for_the_same_project(self):
+        rows = [self.new_total("paired", 600), prompt(100000), prompt(100600)]
+        out = build_report(rows, options(upto=200000))
+        line = [l for l in out.splitlines() if l.startswith("sportx")][0]
+        pairs = [" ".join(line[len("sportx"):].split()[i:i + 2])
+                for i in range(0, 12, 2)]
+        self.assertEqual(pairs[0], "0h 20m")   # 600s history + 600s live
+
+    def test_a_total_row_outside_the_window_is_excluded(self):
+        rows = [self.new_total("paired", 600, day=0, day_end=86400)]
+        out = build_report(rows, options(since=90000, upto=100000))
+        self.assertNotIn("sportx", out)
+
+    def test_byday_reports_a_compacted_day_by_its_own_date(self):
+        import time
+        day = 1000000
+        row = self.new_total("paired", 600, day=day, day_end=day + 86400)
+        out = build_report([row], options(
+            byday=True, boundaries=[day], since=day, upto=day + 86400))
+        label = time.strftime("%Y-%m-%d", time.localtime(day))
+        self.assertIn(label, out)
+        line = [l for l in out.splitlines() if l.startswith(label)][0]
+        pairs = [" ".join(line[len(label):].split()[i:i + 2])
+                for i in range(0, 12, 2)]
+        self.assertEqual(pairs[0], "0h 10m")
+
+
 if __name__ == "__main__":
     unittest.main()

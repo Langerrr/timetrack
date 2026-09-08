@@ -638,19 +638,9 @@ tt_next_midnight() { # local-day start -> next local-day start
   tt_midnight "$(( $1 + 129600 ))"
 }
 
-tt_day_boundaries() { # since until; writes report-only synthetic rows
-  boundary=$(tt_midnight "$1") || return 1
-  while [ "$boundary" -lt "$2" ]; do
-    printf '%s\tboundary\t%s\n' "$(tt_fmt "$boundary" '%Y-%m-%d')" "$boundary"
-    next=$(tt_next_midnight "$boundary") || return 1
-    [ "$next" -gt "$boundary" ] || return 1
-    boundary=$next
-  done
-}
-
-# Same walk as tt_day_boundaries, but yields the bare epoch of each local
-# midnight in the window -- what ttreport's repeatable --boundary wants,
-# rather than the "date\tboundary\tepoch" row the awk-report pipeline reads.
+# Yields the bare epoch of each local midnight in the window -- what
+# ttreport's repeatable --boundary option wants, for both reporting and
+# compaction.
 tt_day_boundary_epochs() { # since upto
   cursor=$(tt_midnight "$1") || return 1
   while [ "$cursor" -lt "$2" ]; do
@@ -709,13 +699,28 @@ tt_validate_rows() { # file role
     function tracked_mode(value) {
       return value == "paired" || value == "solo" || value == "manual"
     }
+    function tracked_category(value) {
+      return value == "paired" || value == "checkin" || value == "manual" ||
+             value == "agent" || value == "tool"
+    }
     function valid_compact() {
       return NF >= 11 && uint($3) && uint($4) && $3 == $4
     }
-    function valid_total() {
-      return NF >= 12 && uint($3) && uint($4) && $4 > $3 &&
+    # A total row is either the retired 12-field layout -- mode in column 7,
+    # seconds in column 11 -- or the current 20-field layout -- category in
+    # column 7, seconds in column 16. Both can coexist in the same file: the
+    # 87 rows a real log already holds are never rewritten.
+    function valid_total_old() {
+      return NF == 12 && uint($3) && uint($4) && $4 > $3 &&
              tracked_mode($7) && $8 != "" && $9 != "" &&
              uint($11) && uint($12)
+    }
+    function valid_total_new() {
+      return NF == 20 && uint($3) && uint($4) && $4 > $3 &&
+             tracked_category($7) && $8 != "" && $9 != "" && uint($16)
+    }
+    function valid_total() {
+      return valid_total_old() || valid_total_new()
     }
     function valid_beat() {
       return NF >= 11 && uint($3) && uint($4) && $4 >= $3 &&
@@ -784,28 +789,35 @@ tt_compact_has_detail() { # compact-file
 }
 
 tt_compact_cleanup() {
-  rm -f "$compact_source" "$compact_input" "$compact_sorted" \
-    "$compact_output" "$state_output" "$compact_new" "$current_new"
+  rm -f "$compact_detail" "$compact_keep" "$compact_combined" \
+    "$compact_sorted" "$compact_history" "$compact_new" "$current_new"
 }
 
 # The caller holds the per-machine event lock. Reconstruct all detail before
-# cutoff, replace it with daily totals, and keep only current-day detail plus a
-# small state snapshot for streams that can still affect a future interval.
+# cutoff into daily totals through the Python reconstruction, and carry
+# forward only what has not yet closed: today's beats and mode transitions,
+# and the still-open tail of a manual span that straddles the boundary
+# (ttreport.compact splits that tail out itself). A legacy or interrupted
+# deployment can leave raw detail sitting inside the compact file itself, so
+# that file's own beat/span/mode/state rows are swept in alongside
+# current-<machine>.tsv; only its total rows -- in either column layout --
+# pass through untouched, so years of history are never reprocessed just to
+# compact today. A stale compact marker is dropped rather than kept, since
+# the fresh marker below always replaces it.
 tt_compact_locked() { # cutoff-epoch
   compact_cutoff=$1
   tt_ensure_gitignore || return 1
   compact_file=$(tt_compact_file)
   current_file=$(tt_current_file)
   compact_machine=$(tt_machine)
-  compact_source="$TT_HOME/.tt-source-$compact_machine.$$"
-  compact_input="$TT_HOME/.tt-input-$compact_machine.$$"
+  compact_detail="$TT_HOME/.tt-detail-$compact_machine.$$"
+  compact_keep="$TT_HOME/.tt-keep-$compact_machine.$$"
+  compact_combined="$TT_HOME/.tt-combined-$compact_machine.$$"
   compact_sorted="$TT_HOME/.tt-sorted-$compact_machine.$$"
-  compact_output="$TT_HOME/.tt-total-$compact_machine.$$"
-  state_output="$TT_HOME/.tt-state-$compact_machine.$$"
+  compact_history="$TT_HOME/.tt-history-$compact_machine.$$"
   compact_new="$TT_HOME/.tt-compact-$compact_machine.$$"
   current_new="$TT_HOME/.tt-current-$compact_machine.$$"
   compact_day=$(tt_fmt "$compact_cutoff" '%Y-%m-%d') || return 1
-  compact_iso=$(tt_iso "$compact_cutoff") || return 1
   compact_lib=${TT_LIB:-$(tt_self)/../lib}
 
   [ -f "$compact_file" ] || : > "$compact_file"
@@ -814,19 +826,72 @@ tt_compact_locked() { # cutoff-epoch
     tt_compact_cleanup
     return 1
   fi
-  if ! cat "$compact_file" "$current_file" > "$compact_source"; then
+  if ! awk -F '\t' -v detail="$compact_detail" -v keep="$compact_keep" '
+      $2 == "beat" || $2 == "span" || $2 == "mode" ||
+      $2 == "state" || $2 == "state-tool" || $2 == "state-agent" {
+        print > detail; next
+      }
+      $2 == "compact" { next }
+      { print > keep }
+    ' "$compact_file"; then
+    tt_compact_cleanup
+    return 1
+  fi
+  [ -f "$compact_detail" ] || : > "$compact_detail"
+  [ -f "$compact_keep" ] || : > "$compact_keep"
+  if ! cat "$compact_detail" "$current_file" > "$compact_combined"; then
+    tt_compact_cleanup
+    return 1
+  fi
+  if ! tt_sort_file "$compact_combined" "$compact_sorted"; then
     tt_compact_cleanup
     return 1
   fi
 
   if ! compact_first=$(awk -F '\t' -v cutoff="$compact_cutoff" '
-    ($2 == "total" && $3 < cutoff) ||
-    (($2 == "beat" || $2 == "span" || $2 == "mode" || $2 == "state") && $3 < cutoff) {
-      at = $3 + 0
-      if (!seen || at < first) { first = at; seen = 1 }
+      $0 != "" && ($3 + 0) < cutoff {
+        at = $3 + 0
+        if (!seen || at < first) { first = at; seen = 1 }
+      }
+      END { if (seen) print first }
+    ' "$compact_sorted"); then
+    tt_compact_cleanup
+    return 1
+  fi
+
+  if [ -n "$compact_first" ]; then
+    compact_since=$(tt_midnight "$compact_first") || {
+      tt_compact_cleanup; return 1;
     }
-    END { if (seen) print first }
-  ' "$compact_source"); then
+    compact_presence=$(tt_presence_gap)
+    compact_checkin=$(tt_checkin_window)
+    compact_active=$(tt_max_active_gap)
+    set -- --cutoff "$compact_cutoff" --carry "$current_new" \
+           --presence-gap "$compact_presence" \
+           --checkin-window "$compact_checkin" \
+           --max-active "$compact_active"
+    for boundary in $(tt_day_boundary_epochs "$compact_since" "$((compact_cutoff + 1))"); do
+      set -- "$@" --boundary "$boundary"
+    done
+    if ! PYTHONPATH="$compact_lib" python3 -m ttreport.compact "$@" \
+        < "$compact_sorted" > "$compact_history"; then
+      tt_compact_cleanup
+      return 1
+    fi
+  else
+    # Nothing precedes the cutoff: carry today's rows through untouched
+    # rather than round-tripping them through the reconstruction.
+    if ! cp "$compact_sorted" "$current_new"; then
+      tt_compact_cleanup
+      return 1
+    fi
+    : > "$compact_history" || { tt_compact_cleanup; return 1; }
+  fi
+  if ! tt_validate_rows "$compact_history" compact-output; then
+    tt_compact_cleanup
+    return 1
+  fi
+  if ! tt_validate_rows "$current_new" current-source; then
     tt_compact_cleanup
     return 1
   fi
@@ -837,102 +902,15 @@ tt_compact_locked() { # cutoff-epoch
     tt_compact_cleanup
     return 1
   fi
-
-  if [ -n "$compact_first" ]; then
-    compact_since=$(tt_midnight "$compact_first") || {
-      tt_compact_cleanup; return 1;
-    }
-    compact_gap=$(tt_config TT_IDLE_GAP) || compact_gap=''
-    [ -n "${compact_gap:-}" ] || compact_gap=$TT_IDLE_GAP
-    tt_positive_number "$compact_gap" || compact_gap=1800
-    compact_wpm=$(tt_reading_wpm)
-    compact_reading=$(tt_max_reading_time)
-    compact_active=$(tt_max_active_gap)
-    if ! cat "$compact_source" > "$compact_input"; then
-      tt_compact_cleanup
-      return 1
-    fi
-    # Include the cutoff boundary so the preceding day's aggregate has its
-    # exact end on 23-, 24-, and 25-hour local days.
-    if ! tt_day_boundaries "$compact_since" "$((compact_cutoff + 1))" >> "$compact_input"; then
-      tt_compact_cleanup
-      return 1
-    fi
-    if ! tt_sort_file "$compact_input" "$compact_sorted"; then
-      tt_compact_cleanup
-      return 1
-    fi
-    if ! awk -v since="$compact_since" -v upto="$compact_cutoff" \
-        -v gap="$compact_gap" -v reading_wpm="$compact_wpm" \
-        -v max_reading="$compact_reading" -v max_active="$compact_active" \
-        -v output_mode=compact -v compact_machine="$compact_machine" \
-        -f "$compact_lib/report.awk" "$compact_sorted" > "$compact_output"; then
-      tt_compact_cleanup
-      return 1
-    fi
-    if ! tt_validate_rows "$compact_output" compact-output; then
-      tt_compact_cleanup
-      return 1
-    fi
-    if ! cat "$compact_output" >> "$compact_new"; then
-      tt_compact_cleanup
-      return 1
-    fi
-  fi
-
-  : > "$current_new" || {
-    tt_compact_cleanup; return 1;
-  }
-
-  # Snapshot state at the boundary while still scanning today's retained beats.
-  # The look-ahead records whether a cross-boundary reading estimate was already
-  # folded into the completed day, preventing it from being added twice later.
-  # State rows are compact context, not historical detail.
-  compact_gap=$(tt_config TT_IDLE_GAP) || compact_gap=''
-  [ -n "${compact_gap:-}" ] || compact_gap=$TT_IDLE_GAP
-  tt_positive_number "$compact_gap" || compact_gap=1800
-  compact_wpm=$(tt_reading_wpm)
-  compact_reading=$(tt_max_reading_time)
-  compact_active=$(tt_max_active_gap)
-  if ! awk -F '\t' '
-      $2 == "state" || $2 == "state-tool" || $2 == "state-agent" ||
-      $2 == "beat" || $2 == "mode"
-    ' "$compact_source" > "$compact_input"; then
+  if ! cat "$compact_history" >> "$compact_new"; then
     tt_compact_cleanup
     return 1
   fi
-  if ! tt_sort_file "$compact_input" "$compact_sorted"; then
+  if ! cat "$compact_keep" >> "$compact_new"; then
     tt_compact_cleanup
     return 1
   fi
-  if ! awk -v since=0 -v upto="$compact_cutoff" -v gap="$compact_gap" \
-      -v reading_wpm="$compact_wpm" -v max_reading="$compact_reading" \
-      -v max_active="$compact_active" -v output_mode=state \
-      -v state_at="$compact_cutoff" -f "$compact_lib/report.awk" \
-      "$compact_sorted" > "$state_output"; then
-    tt_compact_cleanup
-    return 1
-  fi
-  if ! tt_validate_rows "$state_output" state-output; then
-    tt_compact_cleanup
-    return 1
-  fi
-  if ! cat "$state_output" >> "$current_new"; then
-    tt_compact_cleanup
-    return 1
-  fi
-
-  # Keep today's beats and explicit mode transitions. A manual span crossing
-  # the boundary is clipped so its completed portion is not counted again at
-  # tomorrow's rollover.
-  if ! awk -F '\t' -v OFS='\t' -v cutoff="$compact_cutoff" \
-      -v cutoff_iso="$compact_iso" '
-    ($2 == "beat" || $2 == "mode") && $3 >= cutoff { print; next }
-    $2 == "span" && $4 > cutoff {
-      if ($3 < cutoff) { $1 = cutoff_iso; $3 = cutoff }
-      print
-    }
-  ' "$compact_source" >> "$current_new"; then
+  if ! tt_validate_rows "$compact_new" compact-source; then
     tt_compact_cleanup
     return 1
   fi

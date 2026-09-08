@@ -3,14 +3,28 @@
 This module owns the column layout. Rows written before a column existed
 are shorter than the current layout and read their missing fields as "-",
 so an old log replays without conversion.
+
+A `total` row is the one exception that needs more than padding: the
+retired awk compactor wrote a 12-field layout with the day's mode in
+column 7 and its seconds in column 11, while the current compactor writes
+the full-width layout with a category in column 7 and seconds in column
+16. An old row is normalized into the current layout's positions here, so
+every other module only ever sees one `total` shape.
 """
 
 from typing import Iterable, List, NamedTuple, Optional, Tuple
 
 COLUMNS = 20
 MIN_COLUMNS = 11
+OLD_TOTAL_COLUMNS = 12
 
 SUBAGENT_TOOLS = frozenset(["Task", "Agent"])
+
+# `solo` maps to `agent` because, under the retired model, it meant the
+# agent ran while the user was elsewhere -- machine time, not the user's
+# own effort. A duration-only row cannot be split between AGENT and TOOL,
+# so it all lands on AGENT.
+_OLD_TOTAL_CATEGORY = {"paired": "paired", "manual": "manual", "solo": "agent"}
 
 
 class Row(NamedTuple):
@@ -51,7 +65,17 @@ def parse_line(line):
     fields = line.split("\t")
     if len(fields) < MIN_COLUMNS:
         return None
-    fields = fields + ["-"] * (COLUMNS - len(fields))
+    if fields[1] == "total" and len(fields) == OLD_TOTAL_COLUMNS:
+        category = _OLD_TOTAL_CATEGORY.get(fields[6])
+        if category is None:
+            return None
+        fields = [
+            fields[0], "total", fields[2], fields[3], fields[4], "-",
+            category, fields[7], fields[8], "-", "-", "-", "-", "-", "-",
+            fields[10], "-", "-", "-", "-",
+        ]
+    else:
+        fields = fields + ["-"] * (COLUMNS - len(fields))
     try:
         start = int(fields[2])
         end = int(fields[3])

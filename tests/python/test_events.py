@@ -62,5 +62,63 @@ class TestParseLine(unittest.TestCase):
         self.assertEqual([r.start for r in rows], [5, 5])
 
 
+class TestOldTotalRow(unittest.TestCase):
+    # The retired awk compactor's 12-field layout:
+    # iso, total, start, end, machine, -, MODE, project, subpath, -,
+    # SECONDS, estimated
+    def old_total(self, mode, seconds="600", estimated="0", project="sportx",
+                 subpath="."):
+        return row("2026-09-01T00:00:00-0400", "total", "0", "86400", "m1",
+                   "-", mode, project, subpath, "-", seconds, estimated)
+
+    def test_old_paired_row_keeps_its_category_and_seconds(self):
+        r = parse_line(self.old_total("paired"))
+        self.assertEqual(r.kind, "total")
+        self.assertEqual(r.mode, "paired")
+        self.assertEqual(r.words, "600")
+        self.assertEqual(r.start, 0)
+        self.assertEqual(r.end, 86400)
+        self.assertEqual(r.project, "sportx")
+        self.assertEqual(r.subpath, ".")
+
+    def test_old_manual_row_keeps_its_category(self):
+        r = parse_line(self.old_total("manual"))
+        self.assertEqual(r.mode, "manual")
+
+    def test_old_solo_row_maps_to_agent(self):
+        # Under the retired model, solo meant the agent ran while the user
+        # was elsewhere -- machine time, not the user's own effort.
+        r = parse_line(self.old_total("solo"))
+        self.assertEqual(r.mode, "agent")
+
+    def test_an_unrecognized_old_mode_is_dropped_not_crashed(self):
+        self.assertIsNone(parse_line(self.old_total("bogus")))
+
+    def test_new_format_total_row_is_read_directly(self):
+        line = row("-", "total", "0", "86400", "-", "-", "checkin",
+                   "sportx", ".", "-", "-", "-", "-", "-", "-", "900",
+                   "-", "-", "-", "-")
+        r = parse_line(line)
+        self.assertEqual(r.mode, "checkin")
+        self.assertEqual(r.words, "900")
+
+
+class TestLegacyRowsDoNotCrash(unittest.TestCase):
+    def test_an_old_state_row_parses_without_raising(self):
+        line = row("i", "state", "100", "100", "m1", "claude", "paired",
+                   "sportx", ".", "s1", "UserPromptSubmit", "t1", "-", "0",
+                   "-", "-", "-", "-")
+        r = parse_line(line)
+        self.assertIsNotNone(r)
+        self.assertEqual(r.kind, "state")
+
+    def test_a_compact_marker_row_parses_without_raising(self):
+        line = row("2026-09-01", "compact", "86400", "86400", "m1", "-",
+                   "-", "-", "-", "-", "-")
+        r = parse_line(line)
+        self.assertIsNotNone(r)
+        self.assertEqual(r.kind, "compact")
+
+
 if __name__ == "__main__":
     unittest.main()

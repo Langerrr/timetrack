@@ -785,8 +785,8 @@ TODAY_A=$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 10:00')
 TODAY_B=$((TODAY_A + 120))
 DETAIL_LOG=$LOG
 LOG=$COMPACT
-TZ=UTC beat "$PAST_A" paired sportx . old-session
-TZ=UTC beat "$PAST_B" paired sportx . old-session
+TZ=UTC beatx "$PAST_A" paired sportx . old-session UserPromptSubmit turn-a - - - -
+TZ=UTC beatx "$PAST_B" paired sportx . old-session UserPromptSubmit turn-b - - - -
 TZ=UTC beat "$TODAY_A" paired tuurny . new-session
 TZ=UTC beat "$TODAY_B" paired tuurny . new-session
 LOG=$DETAIL_LOG
@@ -794,7 +794,7 @@ LOG=$DETAIL_LOG
 OUT=$(TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report --since 2026-09-02 --until 2026-09-03)
 assert_eq "0h 10m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'legacy completed detail keeps its reported total'
 assert_eq "0" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$COMPACT")" 'the compact file retains no beat rows'
-assert_eq "600" "$(awk -F '\t' '$2 == "total" && $7 == "paired" && $8 == "sportx" { print $11 }' "$COMPACT")" 'a completed project becomes one second total'
+assert_eq "600" "$(awk -F '\t' '$2 == "total" && $7 == "paired" && $8 == "sportx" { print $16 }' "$COMPACT")" 'a completed project becomes one second total'
 assert_eq "2" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$LOG")" 'today detail moves to the current file'
 assert_eq "$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:00')" "$(awk -F '\t' '$2 == "compact" { print $3 }' "$COMPACT")" 'the compact marker records the active local day'
 assert_contains "$(cat "$TT_HOME/.gitignore")" "current-*.tsv" 'legacy migration automatically ignores current detail'
@@ -921,7 +921,7 @@ assert_eq "$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:00')" "$(awk -F '\t' '$2
 clear_logs
 TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" add sportx 30m --at '2026-09-02 12:00' >/dev/null
 assert_eq "0" "$(awk -F '\t' '$2 == "span" { n++ } END { print n + 0 }' "$LOG")" 'a late manual entry leaves no completed span in current detail'
-assert_eq "1800" "$(awk -F '\t' '$2 == "total" && $7 == "manual" && $8 == "sportx" { print $11 }' "$COMPACT")" 'a late manual entry joins its completed-day total'
+assert_eq "1800" "$(awk -F '\t' '$2 == "total" && $7 == "manual" && $8 == "sportx" { print $16 }' "$COMPACT")" 'a late manual entry joins its completed-day total'
 
 # Many hook events collapse to a fixed number of aggregate rows. A stale but
 # inactive stream does not remain as carry state indefinitely.
@@ -931,7 +931,14 @@ LOG=$COMPACT
 MANY_START=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 22:00')
 i=0
 while [ "$i" -lt 100 ]; do
-  TZ=UTC beat "$((MANY_START + i * 10))" paired sportx . dense-session
+  AT=$((MANY_START + i * 10))
+  if [ "$i" -eq 0 ]; then
+    TZ=UTC beatx "$AT" paired sportx . dense-session UserPromptSubmit turn-open - - - -
+  elif [ "$i" -eq 99 ]; then
+    TZ=UTC beatx "$AT" paired sportx . dense-session Stop turn-open - - - -
+  else
+    TZ=UTC beat "$AT" paired sportx . dense-session
+  fi
   i=$((i + 1))
 done
 LOG=$DETAIL_LOG
