@@ -50,8 +50,12 @@ def split_days(spans, boundaries):
         while cursor < end:
             index = bisect.bisect_right(ordered, cursor) - 1
             if index < 0:
-                # Before the first boundary: outside every reported day.
-                break
+                # Before the first boundary: advance cursor to it.
+                cursor = ordered[0]
+                if cursor >= end:
+                    # Span ends before reaching the first boundary.
+                    break
+                continue
             day = ordered[index]
             nxt = ordered[index + 1] if index + 1 < len(ordered) else end
             finish = min(end, nxt)

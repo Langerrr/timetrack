@@ -59,6 +59,16 @@ class TestSplitDays(unittest.TestCase):
     def test_span_before_the_first_boundary_is_dropped(self):
         self.assertEqual(split_days([(0, 50)], [100, 200]), [])
 
+    def test_span_straddling_the_first_boundary_keeps_its_tail(self):
+        self.assertEqual(split_days([(50, 150)], [100, 200]),
+                         [(100, (100, 150))])
+
+    def test_span_crossing_several_boundaries_is_cut_at_each(self):
+        self.assertEqual(
+            split_days([(50, 250)], [0, 100, 200]),
+            [(0, (50, 100)), (100, (100, 200)), (200, (200, 250))],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
