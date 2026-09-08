@@ -423,6 +423,23 @@ tt_max_active_gap() {
     "$TT_MAX_ACTIVE_GAP" 3600 tt_nonnegative_number
 }
 
+# Config file, then environment, then default -- the same order tt_idle_gap's
+# inline callers already use, since these two knobs feed the Python reporter
+# rather than a value captured at process start with an environment-set marker.
+tt_presence_gap() {
+  value=$(tt_config TT_PRESENCE_GAP) || value=''
+  [ -n "${value:-}" ] || value=${TT_PRESENCE_GAP:-3600}
+  tt_positive_number "$value" || value=3600
+  printf '%s' "$value"
+}
+
+tt_checkin_window() {
+  value=$(tt_config TT_CHECKIN_WINDOW) || value=''
+  [ -n "${value:-}" ] || value=${TT_CHECKIN_WINDOW:-1200}
+  tt_positive_number "$value" || value=1200
+  printf '%s' "$value"
+}
+
 # Accepts 90m, 1.5h, 2h30m, or a bare number read as minutes.
 tt_seconds() { # duration
   printf '%s' "$1" | awk '
@@ -628,6 +645,19 @@ tt_day_boundaries() { # since until; writes report-only synthetic rows
     next=$(tt_next_midnight "$boundary") || return 1
     [ "$next" -gt "$boundary" ] || return 1
     boundary=$next
+  done
+}
+
+# Same walk as tt_day_boundaries, but yields the bare epoch of each local
+# midnight in the window -- what ttreport's repeatable --boundary wants,
+# rather than the "date\tboundary\tepoch" row the awk-report pipeline reads.
+tt_day_boundary_epochs() { # since upto
+  cursor=$(tt_midnight "$1") || return 1
+  while [ "$cursor" -lt "$2" ]; do
+    printf '%s\n' "$cursor"
+    next=$(tt_next_midnight "$cursor") || return 1
+    [ "$next" -gt "$cursor" ] || return 1
+    cursor=$next
   done
 }
 
@@ -1024,7 +1054,8 @@ OPTIONS
   --detail             break projects out by session sub-directory
   -h, --help           show this help
 
-ESTIMATED is already included in PAIRED and TOTAL.
+EFFORT is the sum of PAIRED, CHECKIN and MANUAL. AGENT and TOOL are machine
+time and are never part of that sum.
 USAGE
 }
 
@@ -1063,11 +1094,8 @@ cmd_report() {
   done
   [ -n "$since" ] || since=$(tt_midnight "$now") || exit 1
 
-  gap=$(tt_config TT_IDLE_GAP) || gap=''
-  [ -n "${gap:-}" ] || gap=$TT_IDLE_GAP
-  tt_positive_number "$gap" || gap=1800
-  reading_wpm=$(tt_reading_wpm)
-  max_reading=$(tt_max_reading_time)
+  presence_gap=$(tt_presence_gap)
+  checkin_window=$(tt_checkin_window)
   max_active=$(tt_max_active_gap)
   lib=${TT_LIB:-$(tt_self)/../lib}
 
@@ -1075,18 +1103,25 @@ cmd_report() {
   # upgrade from the single-file format.
   tt_compact || tt_die "cannot compact $(tt_compact_file)"
 
+  set -- --since "$since" --upto "$upto" \
+         --presence-gap "$presence_gap" \
+         --checkin-window "$checkin_window" \
+         --max-active "$max_active"
+  [ "$detail" -eq 0 ] || set -- "$@" --detail
+  if [ "$byday" -eq 1 ]; then
+    set -- "$@" --byday
+    for boundary in $(tt_day_boundary_epochs "$since" "$upto"); do
+      set -- "$@" --boundary "$boundary"
+    done
+  fi
+
   # Prefix each row with its input sequence before sorting. The sequence is the
   # numeric tie-breaker for equal-second events, preserving append order without
   # relying on sort's implementation-specific final lexical comparison.
   {
     cat "$TT_HOME"/events-*.tsv 2>/dev/null
     cat "$TT_HOME"/current-*.tsv 2>/dev/null
-    [ "$byday" -eq 0 ] || tt_day_boundaries "$since" "$upto"
-  } | tt_sort_events \
-    | awk -v since="$since" -v upto="$upto" -v gap="$gap" \
-          -v reading_wpm="$reading_wpm" -v max_reading="$max_reading" \
-          -v max_active="$max_active" \
-          -v byday="$byday" -v detail="$detail" -f "$lib/report.awk"
+  } | tt_sort_events | PYTHONPATH="$lib" python3 -m ttreport "$@"
 }
 
 cmd_init() {
@@ -1271,8 +1306,7 @@ READ
   report [today|yesterday|week|month] [--since D] [--until D]
          [--by project|day] [--detail]
       Time per project, covering today unless given a period. Run
-      'tt report --help' for every period and option. ESTIMATED is a
-      subset of PAIRED.
+      'tt report --help' for every period and option.
   sessions           path/session scopes whose mode is set, and their modes
 
 OTHER MACHINES

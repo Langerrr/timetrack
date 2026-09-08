@@ -377,7 +377,11 @@ assert_eq "no events in range" "$(TT_NOW=1900100000 sh "$TT" report --since 2000
 clear_logs
 printf '%s\tspan\t1900000000\t1900003600\t%s\t-\tmanual\ttuurny\t.\t-\tcall\n' \
   "$(sh "$TT" debug-iso 1900000000)" "$M" >> "$LOG"
-assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "1h 00m" 'a span contributes its full length'
+# TT_NOW shares the span's own local day: the report command compacts
+# anything older than "today" through report.awk before the Python
+# reporter ever sees it, so a TT_NOW that made this span "yesterday"
+# would erase it before the assertion below could see it.
+assert_contains "$(TT_NOW=1900000100 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "1h 00m" 'a span contributes its full length'
 
 # Logs from several machines merge.
 clear_logs
@@ -707,7 +711,10 @@ LOWER=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 23:30')
 UPPER=$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 01:30')
 printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\tsportx\t.\t-\tupper\n' \
   "$(TZ=UTC sh "$TT" debug-iso "$LOWER")" "$LOWER" "$UPPER" "$M" >> "$LOG"
-OUT=$(TZ=UTC sh "$TT" report --since 2026-09-02 --until 2026-09-02)
+# TT_NOW is pinned to the queried day itself: without it, "now" defaults to
+# the real wall clock, which makes both 2026 spans "yesterday or older" and
+# report.awk compacts them away before the Python reporter ever reads them.
+OUT=$(TZ=UTC TT_NOW=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 12:00') sh "$TT" report --since 2026-09-02 --until 2026-09-02)
 assert_eq "2h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 3)" 'manual spans are clipped at both report boundaries'
 
 # Two short spans beginning inside the last minute make the old 23:59 cutoff
@@ -1135,5 +1142,22 @@ assert_eq "trigger" "$(last_beat | cut -f19)" 'SessionEnd clears the recorded tr
 
 hook_json s3 UserPromptSubmit "/deploy now" | TT_SOLO_COMMANDS=deploy sh "$TT" hook
 assert_eq "trigger" "$(last_beat | cut -f19)" 'the trigger list is configurable'
+
+printf 'Task 11: report wiring (effort and machine time)\n'
+
+# Bounded with --until: the brief's own example paired --since 1970-01-01
+# with no upper bound, which under --by day makes tt_day_boundary_epochs
+# walk every local midnight from 1970 to "now" one at a time -- tens of
+# thousands of date(1) forks that never finish inside a test run. Every
+# other wide-range report call in this file supplies both bounds; this one
+# now does too.
+REPORT=$(sh "$TT" report --since 1970-01-01 --until 1970-01-02)
+assert_contains "$REPORT" "EFFORT" 'the report names the effort column'
+assert_contains "$REPORT" "AGENT" 'the report names the agent column'
+assert_contains "$REPORT" "TOOL" 'the report names the tool column'
+assert_status 1 'the retired estimate column is gone' -- \
+  sh -c "sh \"$TT\" report --since 1970-01-01 --until 1970-01-02 | grep -q ESTIMATED"
+assert_contains "$(sh "$TT" report --by day --since 1970-01-01 --until 1970-01-02)" "DAY" \
+  'grouping by day names the day column'
 
 finish
