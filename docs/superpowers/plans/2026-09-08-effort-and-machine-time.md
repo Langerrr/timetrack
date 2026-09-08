@@ -1329,6 +1329,7 @@ git commit -m "Reconstruct effort from heartbeats"
 
 Aggregation:
 - Effort spans are unioned **within each bucket and category**; machine spans are summed.
+- Effort categories are then made **disjoint** in priority order `PAIRED` > `CHECKIN` > `MANUAL`: whatever a higher-priority category already covers is subtracted from the lower ones. A check-in episode's window and a paired interval can otherwise cover the same seconds, which would make `EFFORT` exceed the wall clock. After the subtraction the three columns sum exactly to `EFFORT`, and `EFFORT` equals the union of every effort span in the bucket.
 - The bucket key is the project (plus `/subpath` when `detail`), or the day when `byday`.
 - Column order: `PROJECT` (or `DAY`), `PAIRED`, `CHECKIN`, `MANUAL`, `EFFORT`, `AGENT`, `TOOL`.
 - `EFFORT` is `PAIRED + CHECKIN + MANUAL`. A `TOTAL` row closes the table.
@@ -1423,6 +1424,32 @@ class TestBuildReport(unittest.TestCase):
         values = totals[len("TOTAL"):].split()
         pairs = [" ".join(values[i:i + 2]) for i in range(0, len(values), 2)]
         self.assertEqual(pairs[0], "2h 00m")
+
+    def test_overlapping_categories_are_counted_once(self):
+        # A check-in episode's window can cover seconds a paired interval also
+        # covers. Paired wins; the second is never counted twice.
+        rows = [
+            parse_line("\t".join([
+                "i", "mode", "0", "0", "m1", "-", "solo", "sportx", ".",
+                "s1", "-"])),
+            prompt(1000), 
+            parse_line("\t".join([
+                "i", "mode", "1100", "1100", "m1", "-", "paired", "sportx",
+                ".", "s1", "-"])),
+            prompt(1200), prompt(1500),
+        ]
+        out = build_report(rows, options())
+        line = [l for l in out.splitlines() if l.startswith("sportx")][0]
+        values = line[len("sportx"):].split()
+        pairs = [" ".join(values[i:i + 2]) for i in range(0, len(values), 2)]
+        paired, checkin, manual, effort = pairs[0], pairs[1], pairs[2], pairs[3]
+
+        def secs(text):
+            h, m = text.split()
+            return int(h[:-1]) * 3600 + int(m[:-1]) * 60
+
+        self.assertEqual(secs(paired) + secs(checkin) + secs(manual),
+                         secs(effort))
 
     def test_rows_outside_the_window_are_excluded(self):
         rows = [prompt(0), prompt(600)]
