@@ -58,6 +58,18 @@ class TestModeTimeline(unittest.TestCase):
         t = ModeTimeline.from_rows([mode_row(100, "solo", "sportx", ".", "-")])
         self.assertEqual(self.at(t, 150, sibling), "paired")
 
+    def test_a_scoped_transition_does_not_leak_into_a_prefix_sibling(self):
+        sibling = beat(0, "sportx", "saas-backend-old", "s4")
+        t = ModeTimeline.from_rows([
+            mode_row(100, "solo", "sportx", "saas-backend", "-")])
+        self.assertEqual(self.at(t, 150, sibling), "paired")
+
+    def test_a_scoped_transition_reaches_its_own_subtree(self):
+        nested = beat(0, "sportx", "saas-backend/api", "s5")
+        t = ModeTimeline.from_rows([
+            mode_row(100, "solo", "sportx", "saas-backend", "-")])
+        self.assertEqual(self.at(t, 150, nested), "solo")
+
 
 if __name__ == "__main__":
     unittest.main()
