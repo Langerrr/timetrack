@@ -1,3 +1,4 @@
+import time
 import unittest
 from ttreport.events import parse_line
 from ttreport.report import Options, build_report, format_duration
@@ -122,6 +123,27 @@ class TestBuildReport(unittest.TestCase):
         rows = [prompt(0), prompt(600)]
         out = build_report(rows, options(since=50000, upto=60000))
         self.assertNotIn("sportx", out)
+
+    def test_byday_labels_the_local_date_not_the_boundary_epoch(self):
+        # The expected string is derived from the same epoch via
+        # time.localtime, the same call build_report itself makes, so this
+        # holds regardless of the timezone the test happens to run under.
+        early = 1000000
+        late = early + 200000  # comfortably more than a day later in any zone
+        rows = [prompt(early + 100), stop(early + 700),
+                prompt(late + 100), stop(late + 700)]
+        out = build_report(rows, options(
+            byday=True, boundaries=[early, late],
+            since=early, upto=late + 1000))
+        early_label = time.strftime("%Y-%m-%d", time.localtime(early))
+        late_label = time.strftime("%Y-%m-%d", time.localtime(late))
+        self.assertIn(early_label, out)
+        self.assertIn(late_label, out)
+        self.assertNotIn(str(early), out)
+        self.assertNotIn(str(late), out)
+        # Sorting the formatted YYYY-MM-DD keys must still land in
+        # chronological order -- confirmed here rather than assumed.
+        self.assertLess(out.index(early_label), out.index(late_label))
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ MANUAL. That makes the three columns disjoint, so they sum exactly to
 EFFORT, and EFFORT equals the union of every effort span in the bucket.
 """
 
+import time
 from typing import Dict, Iterable, List, NamedTuple
 
 from .effort import effort_spans
@@ -54,7 +55,8 @@ def _collect(entries, options):
         for clipped in clip([span], options.since, options.upto):
             if options.byday:
                 for day, piece in split_days([clipped], options.boundaries):
-                    out.setdefault(str(day), []).append(piece)
+                    label = time.strftime("%Y-%m-%d", time.localtime(day))
+                    out.setdefault(label, []).append(piece)
             else:
                 out.setdefault(_bucket(project, subpath, options), []).append(clipped)
     return out

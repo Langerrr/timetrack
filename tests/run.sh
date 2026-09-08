@@ -1160,4 +1160,19 @@ assert_status 1 'the retired estimate column is gone' -- \
 assert_contains "$(sh "$TT" report --by day --since 1970-01-01 --until 1970-01-02)" "DAY" \
   'grouping by day names the day column'
 
+# A day row's own label must be a calendar date, not the raw boundary epoch
+# lib/ttreport buckets it by internally. TT_NOW is pinned to the fixture's
+# own day for the same reason as the manual-span fixes above: otherwise
+# report.awk's compaction would erase this beat before the Python reporter
+# ever saw it.
+clear_logs
+DAY_LABEL_AT=$(TZ=UTC sh "$TT" debug-epoch '2026-09-07 10:00')
+TZ=UTC beatx "$DAY_LABEL_AT" paired sportx . s1 UserPromptSubmit turn-1 - - - -
+TZ=UTC beatx "$((DAY_LABEL_AT + 600))" paired sportx . s1 UserPromptSubmit turn-2 - - - -
+DAY_OUT=$(TZ=UTC TT_NOW=$(TZ=UTC sh "$TT" debug-epoch '2026-09-07 12:00') \
+  sh "$TT" report --by day --since 2026-09-07 --until 2026-09-07)
+DAY_ROW_LABEL=$(printf '%s\n' "$DAY_OUT" | awk 'NR == 2 { print $1 }')
+assert_eq "1" "$(printf '%s' "$DAY_ROW_LABEL" | grep -cE '^20.*-.*-')" \
+  'a day row is labeled with a date, not a raw epoch'
+
 finish
