@@ -100,6 +100,11 @@ class TestPairedEffort(unittest.TestCase):
         e = run([prompt(0), mode_row(10, "solo"), prompt(3000)])
         self.assertEqual(total(union(spans_of(e.paired))), 10)
 
+    def test_work_after_returning_to_paired_is_credited(self):
+        e = run([mode_row(0, "solo"), prompt(1000),
+                 mode_row(1100, "paired"), prompt(2000)])
+        self.assertEqual(total(union(spans_of(e.paired))), 900)
+
 
 class TestSoloEffort(unittest.TestCase):
     # `tt solo` is itself a moment of presence, so the mode row is a heartbeat

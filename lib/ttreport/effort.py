@@ -32,24 +32,34 @@ def _is_heartbeat(row):
     return row.prompt_class != "machine"
 
 
+def _presence_key(row):
+    # type: (Row) -> Tuple
+    # A mode row carries no harness, so harness cannot be part of the key
+    # that groups a session's heartbeats: `tt paired` and the prompt that
+    # follows it are one person returning to one session.
+    if row.session and row.session != "-":
+        return (row.machine, row.session)
+    return (row.machine, row.harness, row.project + "/" + row.subpath)
+
+
 def effort_spans(rows, timeline, presence_gap, checkin_window):
     # type: (Iterable[Row], ModeTimeline, int, int) -> EffortSpans
     paired = []  # type: List[Entry]
     checkin = []  # type: List[Entry]
     manual = []  # type: List[Entry]
 
-    by_stream = {}  # type: Dict[Tuple, List[Row]]
+    by_presence = {}  # type: Dict[Tuple, List[Row]]
     for row in rows:
         if row.kind == "span":
             manual.append((row.project, row.subpath, (row.start, row.end)))
             continue
         if _is_heartbeat(row):
-            by_stream.setdefault(row.stream, []).append(row)
+            by_presence.setdefault(_presence_key(row), []).append(row)
 
     half_gap = presence_gap // 2
     half_window = checkin_window // 2
 
-    for stream, beats in by_stream.items():
+    for _key, beats in by_presence.items():
         beats.sort(key=lambda r: r.start)
         episode = []  # type: List[Row]
 
@@ -62,7 +72,7 @@ def effort_spans(rows, timeline, presence_gap, checkin_window):
                              last.start + half_window)))
 
         for index, row in enumerate(beats):
-            mode = timeline.at(stream, row.start, row.project, row.subpath)
+            mode = timeline.at(row.stream, row.start, row.project, row.subpath)
             if mode == SOLO:
                 if episode and row.start - episode[-1].start > checkin_window:
                     flush(episode)
@@ -75,7 +85,7 @@ def effort_spans(rows, timeline, presence_gap, checkin_window):
                 continue
             nxt = beats[index + 1]
             boundary = nxt.start
-            change = timeline.next_change(stream, row.start, row.project, row.subpath)
+            change = timeline.next_change(row.stream, row.start, row.project, row.subpath)
             if change is not None and change < boundary:
                 boundary = change
             if boundary <= row.start:
