@@ -88,6 +88,18 @@ class TestPairedEffort(unittest.TestCase):
         self.assertEqual(total(union(by_project["sportx"])), 3600)
         self.assertEqual(total(union(by_project["tuurny"])), 3600)
 
+    def test_a_gap_exactly_at_the_threshold_is_credited_whole(self):
+        e = run([prompt(0), prompt(GAP)])
+        self.assertEqual(total(spans_of(e.paired)), GAP)
+
+    def test_paired_work_before_going_solo_is_still_credited(self):
+        e = run([prompt(0), mode_row(2000, "solo"), prompt(2100)])
+        self.assertEqual(total(union(spans_of(e.paired))), 2000)
+
+    def test_going_solo_early_does_not_bill_the_unattended_hours(self):
+        e = run([prompt(0), mode_row(10, "solo"), prompt(3000)])
+        self.assertEqual(total(union(spans_of(e.paired))), 10)
+
 
 class TestSoloEffort(unittest.TestCase):
     # `tt solo` is itself a moment of presence, so the mode row is a heartbeat

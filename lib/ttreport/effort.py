@@ -74,16 +74,18 @@ def effort_spans(rows, timeline, presence_gap, checkin_window):
             if index + 1 >= len(beats):
                 continue
             nxt = beats[index + 1]
-            if timeline.at(stream, nxt.start, nxt.project, nxt.subpath) == SOLO:
+            boundary = nxt.start
+            change = timeline.next_change(stream, row.start, row.project, row.subpath)
+            if change is not None and change < boundary:
+                boundary = change
+            if boundary <= row.start:
                 continue
-            elapsed = nxt.start - row.start
-            if elapsed <= 0:
-                continue
+            elapsed = boundary - row.start
             if elapsed <= presence_gap:
-                paired.append((row.project, row.subpath, (row.start, nxt.start)))
+                paired.append((row.project, row.subpath, (row.start, boundary)))
             else:
                 paired.append((row.project, row.subpath,
-                               (nxt.start - half_gap, nxt.start)))
+                               (boundary - half_gap, boundary)))
         flush(episode)
 
     return EffortSpans(paired=paired, checkin=checkin, manual=manual)
