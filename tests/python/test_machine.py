@@ -101,6 +101,27 @@ class TestMachineSpans(unittest.TestCase):
         ], max_active=3600)
         self.assertEqual(total(spans_of(m.agent)), 140)
 
+    def test_a_tool_closing_after_its_turn_is_still_subtracted(self):
+        m = machine_spans([
+            beat(0, "UserPromptSubmit"),
+            beat(10, "PreToolUse", tool_id="a", tool_name="Bash"),
+            beat(50, "Stop"),
+            beat(70, "PostToolUse", tool_id="a", tool_name="Bash"),
+        ], max_active=3600)
+        # The turn is 0-50; the bracket overlaps it across 10-50.
+        self.assertEqual(total(spans_of(m.agent)), 10)
+        self.assertEqual(total(spans_of(m.tool)), 60)
+
+    def test_a_tool_covering_a_whole_turn_leaves_no_agent_time(self):
+        m = machine_spans([
+            beat(0, "PreToolUse", tool_id="a", tool_name="Bash"),
+            beat(100, "UserPromptSubmit"),
+            beat(150, "Stop"),
+            beat(200, "PostToolUse", tool_id="a", tool_name="Bash"),
+        ], max_active=3600)
+        self.assertEqual(total(spans_of(m.agent)), 0)
+        self.assertEqual(total(spans_of(m.tool)), 200)
+
 
 if __name__ == "__main__":
     unittest.main()
