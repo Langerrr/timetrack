@@ -1402,8 +1402,11 @@ class TestBuildReport(unittest.TestCase):
         values = line[len("sportx"):].split()
         pairs = [" ".join(values[i:i + 2]) for i in range(0, len(values), 2)]
         effort, agent = pairs[3], pairs[4]
-        self.assertEqual(effort, "1h 01m")
-        self.assertEqual(agent, "1h 00m")
+        # 0->3700 exceeds presence_gap, so paired takes half credit; the
+        # prompt at 3700 opens a turn that never closes and caps at
+        # max_active, so agent is the 3600s turn plus a 3600s cap.
+        self.assertEqual(effort, "0h 30m")
+        self.assertEqual(agent, "2h 00m")
 
     def test_parallel_sessions_do_not_double_count_effort(self):
         rows = [prompt(0, session="s1"), prompt(3600, session="s1"),
