@@ -19,6 +19,7 @@ from .events import Row
 from .intervals import Span, clip, split_days, subtract, total, union
 from .machine import machine_spans
 from .modes import ModeTimeline
+from .state import floor_entries, floor_of
 
 COLUMNS = ("PAIRED", "CHECKIN", "MANUAL", "EFFORT", "AGENT", "TOOL")
 EFFORT_PRIORITY = ("PAIRED", "CHECKIN", "MANUAL")
@@ -126,12 +127,18 @@ def build_report(rows, options):
                           options.checkin_window)
     machine = machine_spans(rows, options.max_active)
 
+    # A carried heartbeat, turn or tool bracket is dated at its own real,
+    # pre-cutoff timestamp so it classifies correctly against what follows
+    # it -- but its pre-cutoff portion is already inside a history `total`
+    # row, so whatever it contributes here is floored at the cutoff that
+    # carried it.
+    floor = floor_of(rows)
     sources = {
-        "PAIRED": effort.paired,
-        "CHECKIN": effort.checkin,
+        "PAIRED": floor_entries(effort.paired, floor),
+        "CHECKIN": floor_entries(effort.checkin, floor),
         "MANUAL": effort.manual,
-        "AGENT": machine.agent,
-        "TOOL": machine.tool,
+        "AGENT": floor_entries(machine.agent, floor),
+        "TOOL": floor_entries(machine.tool, floor),
     }
     collected = {name: _collect(entries, options)
                  for name, entries in sources.items()}

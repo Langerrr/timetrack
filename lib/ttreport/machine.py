@@ -17,17 +17,29 @@ TOOL_CLOSE = frozenset(["PostToolUse", "PostToolUseFailure", "PermissionDenied"]
 TURN_OPEN = "UserPromptSubmit"
 TURN_CLOSE = frozenset(["Stop", "Interrupt", "StopFailure", "SessionEnd"])
 
+# A `state` row carries a bracket that was still open at a prior cutoff --
+# resuming it here lets its post-cutoff portion close normally, the same way
+# a real TOOL_OPEN/TURN_OPEN would.
+STATE_TURN = "turn"
+STATE_TOOL = "tool"
+
 Entry = Tuple[str, str, Span]
 
 
 class MachineSpans(NamedTuple):
     agent: List[Entry]
     tool: List[Entry]
+    # What is still open once every row has been processed -- a prior
+    # cutoff's carried brackets that were never closed, or this call's own,
+    # for a future cutoff to carry in turn.
+    open_turns: Dict[Tuple, Row]
+    open_tools: Dict[Tuple, Row]
 
 
 def machine_spans(rows, max_active):
     # type: (Iterable[Row], int) -> MachineSpans
-    rows = [r for r in rows if r.kind == "beat"]
+    rows = [r for r in rows if r.kind == "beat" or
+            (r.kind == "state" and r.event in (STATE_TURN, STATE_TOOL))]
     rows.sort(key=lambda r: r.start)
 
     agent = []  # type: List[Entry]
@@ -45,6 +57,12 @@ def machine_spans(rows, max_active):
 
     for row in rows:
         stream = row.stream
+        if row.kind == "state" and row.event == STATE_TOOL:
+            open_tools[(stream, row.tool_use_id)] = row
+            continue
+        if row.kind == "state" and row.event == STATE_TURN:
+            turn_open[stream] = row
+            continue
         if row.event == TOOL_OPEN:
             open_tools[(stream, row.tool_use_id)] = row
         elif row.event in TOOL_CLOSE:
@@ -97,4 +115,5 @@ def machine_spans(rows, max_active):
         if end > cursor:
             agent.append((opened.project, opened.subpath, (cursor, end)))
 
-    return MachineSpans(agent=agent, tool=tool)
+    return MachineSpans(agent=agent, tool=tool,
+                        open_turns=dict(turn_open), open_tools=dict(open_tools))

@@ -147,7 +147,12 @@ assert_eq "codex" "$(cut -f6 < "$LOG")" 'harness detected from PLUGIN_ROOT'
 clear_logs
 sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null
 printf '%s' "$HOOKJSON" | TT_NOW=1900000002 sh "$TT" hook
-assert_eq "solo" "$(cut -f7 < "$LOG")" 'mode reflects the session directory'
+# A carried heartbeat state row for the earlier `tt solo` mode transition
+# can legitimately sit alongside the hook's own beat now that mode is
+# carried across a compaction boundary -- pick the beat row specifically,
+# not just any row in the file.
+assert_eq "solo" "$(awk -F '\t' '$2 == "beat" { v = $7 } END { print v }' "$LOG")" \
+  'mode reflects the session directory'
 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" >/dev/null
 
 clear_logs

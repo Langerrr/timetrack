@@ -104,13 +104,25 @@ class TestOldTotalRow(unittest.TestCase):
 
 
 class TestLegacyRowsDoNotCrash(unittest.TestCase):
-    def test_an_old_state_row_parses_without_raising(self):
+    def test_an_old_state_row_is_dropped_not_crashed(self):
+        # 18 fields: the retired awk compactor's width, never exactly the
+        # current 20-column layout. There is no coherent mapping from its
+        # reading-estimate model to a carried heartbeat or bracket, so it is
+        # dropped -- same outcome as any other malformed row, and distinct
+        # from a genuine new-format state row (tested in test_compact.py).
         line = row("i", "state", "100", "100", "m1", "claude", "paired",
                    "sportx", ".", "s1", "UserPromptSubmit", "t1", "-", "0",
                    "-", "-", "-", "-")
+        self.assertIsNone(parse_line(line))
+
+    def test_a_new_format_state_row_parses(self):
+        line = row("-", "state", "100", "100", "m1", "claude", "paired",
+                   "sportx", ".", "s1", "heartbeat", "-", "-", "-", "-",
+                   "86400", "-", "-", "-", "-")
         r = parse_line(line)
         self.assertIsNotNone(r)
         self.assertEqual(r.kind, "state")
+        self.assertEqual(r.event, "heartbeat")
 
     def test_a_compact_marker_row_parses_without_raising(self):
         line = row("2026-09-01", "compact", "86400", "86400", "m1", "-",

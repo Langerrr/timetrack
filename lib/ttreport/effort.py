@@ -8,7 +8,7 @@ heartbeats cluster into check-in episodes and only those are credited.
 
 from typing import Dict, Iterable, List, NamedTuple, Tuple
 
-from .events import Row
+from .events import Row, STATE_HEARTBEAT
 from .intervals import Span
 from .modes import ModeTimeline, SOLO
 
@@ -25,6 +25,8 @@ def _is_heartbeat(row):
     # type: (Row) -> bool
     if row.kind in ("mode", "span"):
         return True
+    if row.kind == "state":
+        return row.event == STATE_HEARTBEAT
     if row.kind != "beat" or row.event != "UserPromptSubmit":
         return False
     if row.agent_id not in ("-", ""):

@@ -3,10 +3,24 @@
 A day that has closed cannot change, so its spans collapse into one total
 per project, subpath and category. Rows at or after the cutoff are carried
 forward untouched, because the reconstruction that covers them is not
-finished yet. The one exception is a manual span that straddles the
-cutoff: it is already fully known (both its ends were logged at once, not
-reconstructed), so its future portion is carried forward too rather than
-lost.
+finished yet. Two exceptions carry more than that:
+
+- A manual span that straddles the cutoff is already fully known (both its
+  ends were logged at once, not reconstructed), so its future portion is
+  carried forward too rather than lost.
+- A heartbeat, turn or tool bracket still active at the cutoff is carried
+  as a `state` row (see state.py) dated at its own real, pre-cutoff
+  timestamp, so a later, independent reconstruction classifies whatever
+  follows it exactly as an uncompacted one would -- and floors the result
+  at the cutoff, since the pre-cutoff portion is already counted below.
+
+History itself is computed from every row given, not just what precedes
+the cutoff: a turn or bracket that closes inside the carried rows should
+use its real close time here too, rather than the open-ended estimate a
+past-only view would be forced to guess at. The result is then clipped to
+`[floor, cutoff)`, where `floor` is 0 unless `rows` itself already carries
+state from an earlier round (state.floor_of) -- in which case that floor
+keeps this round from re-crediting what an earlier round already did.
 
 Effort categories are made disjoint here in the same priority order --
 PAIRED > CHECKIN > MANUAL -- that build_report applies to live spans, so a
@@ -25,6 +39,7 @@ from .intervals import Span, clip, split_days, subtract, total, union
 from .machine import machine_spans
 from .modes import ModeTimeline
 from .report import Options
+from .state import floor_of, write_lines
 
 EFFORT_CATEGORIES = ("paired", "checkin", "manual")
 MACHINE_CATEGORIES = ("agent", "tool")
@@ -77,10 +92,26 @@ def compact(rows, cutoff, options):
     if not past:
         return ([], carry)
 
-    timeline = ModeTimeline.from_rows(past)
-    effort = effort_spans(past, timeline, options.presence_gap,
+    lower = floor_of(rows)
+    if lower is None:
+        lower = 0
+
+    # History uses every row, so a bracket that closes inside what is being
+    # carried still gets its real close time here rather than an estimate.
+    timeline = ModeTimeline.from_rows(rows)
+    effort = effort_spans(rows, timeline, options.presence_gap,
                           options.checkin_window)
-    machine = machine_spans(past, options.max_active)
+    machine = machine_spans(rows, options.max_active)
+
+    # What state to carry is answered from a strictly past-only view: a
+    # bracket this call's own full-row pass already resolved (its close
+    # lives in `rows`, whether that close precedes or follows the cutoff)
+    # needs no seed -- it is either already inside history below or, being
+    # at or after the cutoff, already carried verbatim as the close's own
+    # row. Only what past alone cannot resolve needs carrying forward.
+    machine_past = machine_spans(past, options.max_active)
+    carry.extend(write_lines(past, cutoff, options.presence_gap,
+                             options.max_active, machine_past))
 
     sources = {
         "paired": effort.paired,
@@ -93,7 +124,7 @@ def compact(rows, cutoff, options):
     buckets = {}  # type: Dict[Tuple[int, str, str], Dict[str, List[Span]]]
     for category, entries in sources.items():
         for project, subpath, span in entries:
-            for clipped in clip([span], 0, cutoff):
+            for clipped in clip([span], lower, cutoff):
                 for day, piece in split_days([clipped], options.boundaries):
                     bucket = buckets.setdefault((day, project, subpath), {})
                     bucket.setdefault(category, []).append(piece)

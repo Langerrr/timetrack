@@ -735,9 +735,23 @@ tt_validate_rows() { # file role
              ($7 == "paired" || $7 == "solo") &&
              $8 != "" && $9 != "" && $10 != ""
     }
-    function valid_state() {
-      return NF >= 18 && uint($3) && uint($4) && $4 >= $3 &&
+    function tracked_state_event(value) {
+      return value == "heartbeat" || value == "turn" || value == "tool"
+    }
+    # Same split as total: the retired reading-estimate model at its own,
+    # narrower width, or the current 20-field layout -- a carried
+    # heartbeat, turn or tool bracket, dated at its own instant ($3 == $4)
+    # with the cutoff that carried it in column 16.
+    function valid_state_old() {
+      return NF >= 18 && NF != 20 && uint($3) && uint($4) && $4 >= $3 &&
              ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
+    }
+    function valid_state_new() {
+      return NF == 20 && uint($3) && uint($4) && $3 == $4 &&
+             tracked_state_event($11) && $8 != "" && $9 != "" && uint($16)
+    }
+    function valid_state() {
+      return valid_state_old() || valid_state_new()
     }
     function valid_state_child() {
       return NF >= 12 && uint($3) && uint($4) && $4 >= $3 &&

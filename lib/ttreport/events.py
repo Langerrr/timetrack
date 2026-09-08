@@ -26,6 +26,13 @@ SUBAGENT_TOOLS = frozenset(["Task", "Agent"])
 # so it all lands on AGENT.
 _OLD_TOTAL_CATEGORY = {"paired": "paired", "manual": "manual", "solo": "agent"}
 
+# A `state` row's `event` column says which fact it carries across a
+# compaction cutoff: the last heartbeat (its `mode` column is the mode
+# effective at that heartbeat), an open turn, or an open tool bracket.
+STATE_HEARTBEAT = "heartbeat"
+STATE_TURN = "turn"
+STATE_TOOL = "tool"
+
 
 class Row(NamedTuple):
     iso: str
@@ -74,6 +81,14 @@ def parse_line(line):
             category, fields[7], fields[8], "-", "-", "-", "-", "-", "-",
             fields[10], "-", "-", "-", "-",
         ]
+    elif fields[1] == "state" and len(fields) != COLUMNS:
+        # The retired awk compactor's state row encoded a different
+        # reconstruction entirely (reading estimates, pending-stop
+        # tracking) at widths that are never exactly COLUMNS wide. There is
+        # no coherent mapping from that model to this one, unlike `total`,
+        # so it is dropped rather than misread as a carried heartbeat or
+        # bracket.
+        return None
     else:
         fields = fields + ["-"] * (COLUMNS - len(fields))
     try:

@@ -7,7 +7,7 @@ nested working directory.
 
 from typing import Iterable, List, Optional, Tuple
 
-from .events import Row
+from .events import Row, STATE_HEARTBEAT
 
 PAIRED = "paired"
 SOLO = "solo"
@@ -40,7 +40,12 @@ class ModeTimeline(object):
     @classmethod
     def from_rows(cls, rows):
         # type: (Iterable[Row]) -> ModeTimeline
-        transitions = [r for r in rows if r.kind == "mode"]
+        # A carried heartbeat state row is itself a transition: it is dated
+        # at the heartbeat's own timestamp and carries the mode that was
+        # effective there, so a post-cutoff query resumes it exactly as an
+        # uncompacted timeline would have.
+        transitions = [r for r in rows if r.kind == "mode" or
+                       (r.kind == "state" and r.event == STATE_HEARTBEAT)]
         transitions.sort(key=lambda r: r.start)
         return cls(transitions)
 
