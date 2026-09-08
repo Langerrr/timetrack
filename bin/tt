@@ -169,33 +169,65 @@ tt_event_lock() {
 
 tt_event_unlock() { rmdir "$(tt_event_lock_dir)" 2>/dev/null || :; }
 
-tt_set_mode() { # mode path session [quiet]
-  m=$1
-  p=$(tt_abs "${2:-$PWD}")
-  s=${3:--}
+# Appends the durable record of a mode transition, shared by an explicit
+# `tt solo`/`tt paired` and an automatic trigger detected in cmd_hook. ORIGIN
+# lands in column 11, which a mode row otherwise leaves empty, so a session
+# that went solo on its own can be explained later; nothing in reporting
+# reads it.
+tt_write_mode_row() { # mode path session epoch origin
+  wmr_mode=$1
+  wmr_path=$2
+  wmr_session=$3
+  wmr_epoch=$4
+  wmr_origin=${5:--}
+  wmr_attrib=$(tt_attribute "$wmr_path")
+  wmr_proj=$(printf '%s' "$wmr_attrib" | cut -f1)
+  wmr_sub=$(printf '%s' "$wmr_attrib" | cut -f2)
+  wmr_row=$(printf '%s\tmode\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s' \
+    "$(tt_iso "$wmr_epoch")" "$wmr_epoch" "$wmr_epoch" "$(tt_machine)" "$wmr_mode" \
+    "$(tt_clean "$wmr_proj")" "$(tt_clean "$wmr_sub")" "$(tt_clean "$wmr_session")" \
+    "$(tt_clean "$wmr_origin")")
+  tt_append_row "$wmr_row" "$wmr_epoch"
+}
+
+# Rewrites the capture-time mode cache read by tt_mode, so a hook can stamp
+# its very next beat with a transition instead of waiting for a report to
+# replay the durable mode row tt_write_mode_row appends alongside it. Shared
+# by an explicit `tt solo`/`tt paired` and an automatic trigger in cmd_hook.
+#
+# Failure is signalled by a plain return, never tt_die: cmd_hook calls this
+# directly (not inside a subshell of its own), and an automatic trigger must
+# degrade quietly rather than abort the rest of the hook -- ordinary lock
+# contention between concurrent hooks is expected, not an error worth dying
+# over. tt_set_mode, called only for an explicit `tt solo`/`tt paired`, is
+# the one that turns a failure here into a visible one.
+tt_cache_mode() { # mode path session
+  cm_mode=$1
+  cm_path=$(tt_abs "$2")
+  cm_session=$3
   # The modes file separates its fields with a TAB and its rows with a
   # newline, so a path holding either cannot be stored and read back as itself.
   # Refusing it costs two comparisons; an escaping scheme would cost a format.
   tab=$(printf '\t')
   nl=$(printf '\nx'); nl=${nl%x}
-  case "$p" in
-    *"$tab"*) tt_die "cannot record a path containing a tab: $p" ;;
-    *"$nl"*)  tt_die "cannot record a path containing a newline: $p" ;;
+  case "$cm_path" in
+    *"$tab"*) return 1 ;;
+    *"$nl"*)  return 1 ;;
   esac
-  case "$s" in
-    *"$tab"*) tt_die "cannot record a session containing a tab" ;;
-    *"$nl"*)  tt_die "cannot record a session containing a newline" ;;
-    '')        tt_die "cannot record an empty session" ;;
+  case "$cm_session" in
+    *"$tab"*) return 1 ;;
+    *"$nl"*)  return 1 ;;
+    '')        return 1 ;;
   esac
-  mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
-  tt_lock || tt_die "timed out waiting for $(tt_lock_dir); if no other tt is running, remove it"
+  mkdir -p "$TT_HOME" || return 1
+  tt_lock || return 1
   trap 'tt_unlock' EXIT HUP INT TERM
   f=$(tt_modes_file)
   if [ -f "$f" ]; then src=$f; else src=/dev/null; fi
   # Rewritten whole into a temporary file and moved into place, so a reader
   # racing this sees either the old file or the new one, never half of either.
   t="$f.$$"
-  if TT_MODE=$m TT_MODE_PATH=$p TT_MODE_SESSION=$s awk -F '\t' '
+  if TT_MODE=$cm_mode TT_MODE_PATH=$cm_path TT_MODE_SESSION=$cm_session awk -F '\t' '
     BEGIN {
       m = ENVIRON["TT_MODE"]; p = ENVIRON["TT_MODE_PATH"]
       session = ENVIRON["TT_MODE_SESSION"]
@@ -208,24 +240,26 @@ tt_set_mode() { # mode path session [quiet]
     END { printf "%s\t%s\t%s\n", m, p, session }
   ' "$src" > "$t"
   then
-    mv "$t" "$f" || { rm -f "$t"; tt_die "cannot write $f"; }
+    mv "$t" "$f" || { rm -f "$t"; tt_unlock; trap - EXIT HUP INT TERM; return 1; }
   else
-    rm -f "$t"; tt_die "cannot write $f"
+    rm -f "$t"; tt_unlock; trap - EXIT HUP INT TERM; return 1
   fi
   tt_unlock
   trap - EXIT HUP INT TERM
+  return 0
+}
+
+tt_set_mode() { # mode path session [quiet]
+  m=$1
+  p=$(tt_abs "${2:-$PWD}")
+  s=${3:--}
+  tt_cache_mode "$m" "$p" "$s" || tt_die "cannot record mode: $m $p (session $s); check for a tab or newline in the path or session, or that $(tt_modes_file) is writable"
 
   # The explicit transition is the source of truth for reports. Unlike a mode
   # stamped on the next hook beat, it splits activity at the instant the user
   # says they stepped away or returned.
   now=$(tt_now)
-  attrib=$(tt_attribute "$p")
-  proj=$(printf '%s' "$attrib" | cut -f1)
-  sub=$(printf '%s' "$attrib" | cut -f2)
-  row=$(printf '%s\tmode\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t-' \
-    "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$m" \
-    "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$s")")
-  tt_append_row "$row" "$now" || tt_die "cannot record mode transition in $(tt_log_file)"
+  tt_write_mode_row "$m" "$p" "$s" "$now" hand || tt_die "cannot record mode transition in $(tt_log_file)"
 
   [ "${4:-}" = quiet ] || {
     if [ "$s" = - ]; then printf '%s: %s (all sessions below path)\n' "$m" "$p"
@@ -438,6 +472,50 @@ cmd_add() {
   printf '%s\n' "$row"
 }
 
+# A fingerprint identifies a repeated prompt without storing what it said.
+# cksum is in POSIX and present on both target platforms; the value only has
+# to be stable within one machine's log.
+tt_fingerprint() { # string
+  printf '%s' "$1" | cksum | awk '{ printf "%08x\n", $1 }'
+}
+
+tt_solo_commands() {
+  value=$(tt_config TT_SOLO_COMMANDS) || value=''
+  [ -n "${value:-}" ] || value=${TT_SOLO_COMMANDS:-goal,loop,schedule}
+  printf '%s' "$value"
+}
+
+tt_trigger_file() { # session
+  printf '%s/trigger/%s' "$TT_HOME" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+}
+
+# Prints CLASS<tab>FINGERPRINT for a submitted prompt.
+#
+# A /loop or /schedule wake-up resubmits the exact prompt that started the
+# run, so its first word still names a trigger command. The recorded
+# fingerprint is therefore checked first: only a prompt that is not already
+# the session's known trigger can newly classify as trigger, so a replay
+# lands on the fingerprint match (machine) instead of re-triggering.
+tt_classify_prompt() { # prompt session
+  prompt=$1; sid=$2
+  if [ -z "$prompt" ]; then printf -- '-\t-\n'; return 0; fi
+  fp=$(tt_fingerprint "$prompt")
+  known=$(cat "$(tt_trigger_file "$sid")" 2>/dev/null) || known=''
+  if [ -n "$known" ] && [ "$known" = "$fp" ]; then
+    printf 'machine\t%s\n' "$fp"
+    return 0
+  fi
+  # The command word, without its leading slash or any plugin: prefix.
+  word=$(printf '%s' "$prompt" | awk '{ print $1 }' | sed 's|^/||; s|^[^:]*:||')
+  if printf '%s' "$(tt_solo_commands)" | tr ',' '\n' | grep -qx -- "$word"; then
+    mkdir -p "$TT_HOME/trigger" 2>/dev/null || :
+    printf '%s\n' "$fp" > "$(tt_trigger_file "$sid")" 2>/dev/null || :
+    printf 'trigger\t%s\n' "$fp"
+    return 0
+  fi
+  printf 'human\t%s\n' "$fp"
+}
+
 cmd_hook() {
   input=$(cat 2>/dev/null) || input=''
 
@@ -465,6 +543,17 @@ cmd_hook() {
     message=$(tt_json_str last_assistant_message "$input")
     [ -z "$message" ] || words=$(tt_word_count "$message")
   fi
+  tool_name=$(tt_json_str tool_name "$input")
+  [ -n "$tool_name" ] || tool_name='-'
+  user_prompt=$(tt_json_str user_prompt "$input")
+  [ -n "$user_prompt" ] || user_prompt=$(tt_json_str prompt "$input")
+  prompt_class='-'; prompt_fp='-'
+  if [ "$evt" = UserPromptSubmit ]; then
+    classified=$(tt_classify_prompt "$user_prompt" "$sid")
+    prompt_class=$(printf '%s' "$classified" | cut -f1)
+    prompt_fp=$(printf '%s' "$classified" | cut -f2)
+  fi
+  [ "$evt" != SessionEnd ] || rm -f "$(tt_trigger_file "$sid")" 2>/dev/null || :
 
   # Codex sets CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA next to its own
   # PLUGIN_ROOT and PLUGIN_DATA, so a hook it runs answers to both names.
@@ -482,12 +571,23 @@ cmd_hook() {
   sub=$(printf '%s' "$attrib" | cut -f2)
   mode=$(tt_mode "$cwd" "$sid")
 
-  row=$(printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+  row=$(printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
     "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
     "$(tt_clean "$turn")" "$(tt_clean "$tool")" "$(tt_clean "$agent")" \
-    "$(tt_clean "$agent_type")" "$words" "$(tt_clean "$session_source")")
+    "$(tt_clean "$agent_type")" "$words" "$(tt_clean "$session_source")" \
+    "$(tt_clean "$tool_name")" "$prompt_class" "$prompt_fp")
   tt_append_row "$row" "$now" >/dev/null 2>&1 || :
+
+  # A replayed /loop or /schedule wake-up sets solo automatically; a genuine
+  # human prompt does not, and neither does a replay already covered by an
+  # earlier trigger (classified machine, not trigger again). Both the durable
+  # row and the capture-time cache are updated, so the transition is visible
+  # in a report immediately and to this session's very next beat.
+  if [ "$prompt_class" = trigger ]; then
+    tt_cache_mode solo "$cwd" "$sid" >/dev/null 2>&1 || :
+    tt_write_mode_row solo "$cwd" "$sid" "$now" auto >/dev/null 2>&1 || :
+  fi
   return 0
 }
 
@@ -991,7 +1091,7 @@ cmd_report() {
 
 cmd_init() {
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
-  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=1800\n# TT_MAX_ACTIVE_GAP=3600\n# TT_READING_WPM=120 (0 disables the reading estimate)\n# TT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
+  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=1800\n# TT_MAX_ACTIVE_GAP=3600\n# TT_READING_WPM=120 (0 disables the reading estimate)\n# TT_MAX_READING_TIME=600\n# TT_SOLO_COMMANDS=goal,loop,schedule\n' > "$TT_HOME/config"
   f=$(tt_compact_file); [ -f "$f" ] || : > "$f"
   f=$(tt_current_file); [ -f "$f" ] || : > "$f"
   f=$(tt_modes_file); [ -f "$f" ] || : > "$f"

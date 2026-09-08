@@ -175,7 +175,7 @@ assert_eq 'a\"b' "$(cut -f9 < "$LOG")" 'an escaped quote in cwd does not truncat
 clear_logs
 EXTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"SubagentStart","turn_id":"turn-7","tool_use_id":"tool-8","agent_id":"agent-9","agent_type":"worker"}'
 printf '%s' "$EXTJSON" | TT_NOW=1900000006 PLUGIN_ROOT=/p sh "$TT" hook
-assert_eq "17" "$(awk -F '\t' '{ print NF }' "$LOG")" 'new beats append six lifecycle fields'
+assert_eq "20" "$(awk -F '\t' '{ print NF }' "$LOG")" 'new beats append six lifecycle fields plus tool name and prompt classification'
 assert_eq "turn-7" "$(cut -f12 < "$LOG")" 'turn id captured'
 assert_eq "tool-8" "$(cut -f13 < "$LOG")" 'tool id captured'
 assert_eq "agent-9" "$(cut -f14 < "$LOG")" 'subagent id captured'
@@ -1090,5 +1090,50 @@ cp "$REPO/bin/tt" "$PLUGIN_COPY/bin/tt"
 cp "$REPO/lib/report.awk" "$PLUGIN_COPY/lib/report.awk"
 cp "$REPO/skills/timetrack/scripts/tt" "$PLUGIN_COPY/skills/timetrack/scripts/tt" 2>/dev/null || :
 assert_eq "$TT_ROOT" "$(sh "$PLUGIN_COPY/skills/timetrack/scripts/tt" root 2>/dev/null)" 'the bundled skill command resolves its copied plugin root'
+
+printf 'Task 10: prompt classification and automatic solo\n'
+
+hook_json() { # session event prompt
+  printf '{"session_id":"%s","hook_event_name":"%s","cwd":"%s","user_prompt":"%s","tool_name":"%s"}' \
+    "$1" "$2" "$TT_ROOT/sportx" "$3" "${4:--}"
+}
+
+CUR="$TT_HOME/current-$(sh "$TT" debug-machine).tsv"
+: > "$CUR"
+TAB=$(printf '\t')
+
+# A trigger classification also appends an automatic mode row right after the
+# beat row (both land in $CUR), so the beat row carrying the classification
+# columns is not always the file's last line -- it has to be picked out by
+# kind rather than by position.
+last_beat() { awk -F '\t' '$2 == "beat" { last = $0 } END { print last }' "$CUR"; }
+
+hook_json s1 UserPromptSubmit "please review the design" | sh "$TT" hook
+LAST=$(last_beat)
+assert_eq "human" "$(printf '%s' "$LAST" | cut -f19)" 'an ordinary prompt classifies as human'
+assert_status 1 'a human prompt records a fingerprint' -- \
+  sh -c "printf '%s' \"$LAST\" | cut -f20 | grep -qx -"
+
+hook_json s1 PreToolUse "" Bash | sh "$TT" hook
+assert_eq "Bash" "$(last_beat | cut -f18)" 'tool_name is recorded'
+
+hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT" hook
+assert_eq "trigger" "$(last_beat | cut -f19)" 'a solo-trigger command classifies as trigger'
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx" s2)" 'a trigger command sets solo for its session'
+assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx" s1)" 'another session keeps its own mode'
+assert_eq "auto" "$(grep "${TAB}mode${TAB}" "$CUR" | tail -1 | cut -f11)" 'an automatic transition records its origin'
+
+hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT" hook
+assert_eq "machine" "$(last_beat | cut -f19)" 'a replayed trigger prompt classifies as machine'
+
+hook_json s2 UserPromptSubmit "how is it going" | sh "$TT" hook
+assert_eq "human" "$(last_beat | cut -f19)" 'a check-in during a solo run is a human prompt'
+
+hook_json s2 SessionEnd "" | sh "$TT" hook
+hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT" hook
+assert_eq "trigger" "$(last_beat | cut -f19)" 'SessionEnd clears the recorded trigger'
+
+hook_json s3 UserPromptSubmit "/deploy now" | TT_SOLO_COMMANDS=deploy sh "$TT" hook
+assert_eq "trigger" "$(last_beat | cut -f19)" 'the trigger list is configurable'
 
 finish
