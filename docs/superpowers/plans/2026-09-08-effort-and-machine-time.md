@@ -1957,63 +1957,54 @@ git commit -m "Compact completed days through the Python reconstruction"
 
 ---
 
-### Task 10: Retire the awk implementation and the reading estimate
+### Task 10: Retire the awk reconstruction and the obsolete test layer
 
 **Files:**
 - Delete: `lib/report.awk`
 - Modify: `bin/tt` — remove `tt_reading_wpm`, `tt_max_reading_time` and their config plumbing
-- Modify: `tests/run.sh` — delete reading-estimate assertions
+- Modify: `tests/run.sh` — delete the assertions that specify the retired accounting model
+- Create: `tests/python/test_cli.py` — the behaviour worth keeping, at Python speed
 - Modify: `README.md`
+
+**Why the shell assertions go rather than get rewritten.** The accounting model now lives in `lib/ttreport` and is covered by 110 Python tests that run in 0.07 seconds. `tests/run.sh` takes 45 seconds and 70 of its assertions encode the retired flat rule — its `beat` helper writes an eventless beat, which the old rule counted and the new model correctly ignores. Rewriting them would mean re-deriving 70 expected values for a model that already has better coverage elsewhere. What the shell suite is still good for is the CLI surface: does the hook append a row, does `tt add` write a span, does `tt report` print a table, does mode setting round-trip. That is what it keeps.
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: a tree with one reconstruction implementation.
+- Produces: a tree with one reconstruction implementation and a green suite.
 
-`TT_READING_WPM` and `TT_MAX_READING_TIME` stop being read anywhere. `assistant_words` stays in the layout — it is written by existing rows and costs nothing to keep — but nothing consumes it.
+- [ ] **Step 1: Establish what must survive**
 
-- [ ] **Step 1: Write the failing test**
+Before deleting anything, list every currently-passing assertion in `tests/run.sh` that tests behaviour rather than the retired accounting model — attribution, mode files, config precedence, hook row shape, locking, sync, the CLI surface. Those stay. Write the list into the report.
 
-```sh
-# append to tests/run.sh
-printf 'Task N: the awk reconstruction is gone\n'
-assert_status 1 'report.awk is deleted' -- test -f "$REPO/lib/report.awk"
-assert_status 1 'no reading-wpm plumbing remains' -- \
-  grep -q TT_READING_WPM "$REPO/bin/tt"
-assert_status 1 'no max-reading plumbing remains' -- \
-  grep -q TT_MAX_READING_TIME "$REPO/bin/tt"
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cd /home/lan/workspace/langerrr/timetrack && sh tests/run.sh`
-Expected: FAIL — `report.awk is deleted` fails because the file is still present.
-
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 2: Delete the awk reconstruction**
 
 ```bash
 git rm lib/report.awk
 ```
 
-In `bin/tt`, delete the `tt_reading_wpm` and `tt_max_reading_time` functions, the `TT_READING_WPM_SET` and `TT_MAX_READING_TIME_SET` variables near the top of the file, and every remaining reference to them.
+Remove from `bin/tt`: `tt_reading_wpm`, `tt_max_reading_time`, the `TT_READING_WPM_SET` and `TT_MAX_READING_TIME_SET` variables, and every remaining reference. `assistant_words` stays in the layout — existing rows carry it and it costs nothing — but nothing reads it.
 
-Update `README.md`:
-- Replace the "What it records" reconstruction paragraph with the two measures, the heartbeat rule, and the mode table from the spec.
-- Replace the `ESTIMATED` column in every sample report with `EFFORT`, `AGENT` and `TOOL`.
-- Replace the configuration table with `TT_PRESENCE_GAP`, `TT_CHECKIN_WINDOW`, `TT_MAX_ACTIVE_GAP`, `TT_SOLO_COMMANDS` and `TT_ROOT`.
-- Add Python 3.8+ to the requirements section, noting it is needed for reporting but not for capture.
-- Document automatic solo under "The three modes".
+- [ ] **Step 3: Remove the obsolete assertions**
 
-- [ ] **Step 4: Run test to verify it passes**
+Delete the `tests/run.sh` assertions that specify the retired model: everything asserting the flat two-beats-within-gap rule, and everything asserting reading-time estimation or the `ESTIMATED` column. The suite must reach zero failures. Report the count deleted and the count kept.
 
-Run: `cd /home/lan/workspace/langerrr/timetrack && PYTHONPATH=lib python3 -m unittest discover -s tests/python -v && sh tests/run.sh`
-Expected: PASS on both
+- [ ] **Step 4: Port the coverage worth keeping**
 
-- [ ] **Step 5: Commit**
+Any behaviour from Step 1 that is cheaper and clearer to assert in Python — particularly anything that builds a log and checks a reported number — moves to `tests/python/test_cli.py`, driving `bin/tt` through `subprocess` against a temporary `TT_HOME`. Keep it to real end-to-end behaviour; the units are already covered.
+
+- [ ] **Step 5: Update the README**
+
+Replace the reconstruction paragraph with the two measures, the heartbeat rule and the mode table from the spec. Replace `ESTIMATED` in every sample report with `EFFORT`, `AGENT` and `TOOL`. Replace the configuration table with `TT_PRESENCE_GAP`, `TT_CHECKIN_WINDOW`, `TT_MAX_ACTIVE_GAP`, `TT_SOLO_COMMANDS`, `TT_ROOT`. Add Python 3.8+ to requirements, noting it is needed for reporting and compaction. Document automatic solo under "The three modes".
+
+- [ ] **Step 6: Verify and commit**
 
 ```bash
-git add -A
-git commit -m "Retire the awk reconstruction"
+PYTHONPATH=lib python3 -m unittest discover -s tests/python -v
+sh tests/run.sh && dash tests/run.sh
+git add -A && git commit -m "Retire the awk reconstruction"
 ```
+
+Both suites must be green.
 
 ---
 
