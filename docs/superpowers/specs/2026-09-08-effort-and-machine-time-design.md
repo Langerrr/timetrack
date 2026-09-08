@@ -170,6 +170,13 @@ their own heartbeat windows, which is what they are.
 machine time, stand apart in agent-hours, and are not part of any total with the
 others.
 
+A second belongs to exactly one effort column. Where a check-in episode and a
+paired interval cover the same moment, `PAIRED` takes it: the interval is
+bracketed by two heartbeats, while the episode window is an assumption drawn
+around one. `MANUAL` yields to both, being a typed claim rather than an observed
+event. The columns therefore sum to `EFFORT`, and `EFFORT` stays inside the
+wall clock.
+
 `--by day`, `--by project`, `--detail`, `--since` and `--until` behave as they do
 today.
 
