@@ -245,5 +245,63 @@ class TestCompactionRoundTrips(unittest.TestCase):
         self.assertNotEqual(paired_cell(after), "0h 00m")
 
 
+class TestCompactionAcrossActiveState(unittest.TestCase):
+    # A cutoff placed the way bin/tt places it -- a local day boundary --
+    # can still fall inside a turn, a tool bracket, or right at a mode
+    # transition, because compaction runs whenever the next `tt` invocation
+    # happens to land, not at the instant something closes. Each case here
+    # builds the report from the raw rows, compacts at the boundary, rebuilds
+    # the report from history-plus-carry (exactly what cmd_report feeds
+    # ttreport: events-*.tsv and current-*.tsv together), and compares the
+    # two column by column.
+    CUTOFF = 86400
+    COMPACT_OPTIONS = options(boundaries=[0, 86400])
+
+    def round_trip(self, rows, report_opts=None):
+        report_opts = report_opts or _report_options()
+        before = build_report(rows, report_opts)
+        history, carry = compact(rows, cutoff=self.CUTOFF,
+                                 options=self.COMPACT_OPTIONS)
+        after = build_report(parse_stream(history + carry), report_opts)
+        return before, after
+
+    def test_an_open_turn_spanning_the_cutoff_keeps_its_agent_time(self):
+        # UserPromptSubmit before the cutoff, Stop after it.
+        rows = [
+            beat(86300, "UserPromptSubmit"),
+            beat(86500, "Stop"),
+        ]
+        before, after = self.round_trip(rows)
+        self.assertEqual(before, after)
+
+    def test_a_tool_bracket_spanning_the_cutoff_keeps_agent_and_tool_time(self):
+        # PreToolUse before the cutoff, PostToolUse after it.
+        rows = [
+            beat(86000, "UserPromptSubmit"),
+            beat(86300, "PreToolUse", tool_id="a", tool_name="Bash"),
+            beat(86500, "PostToolUse", tool_id="a", tool_name="Bash"),
+            beat(86700, "Stop"),
+        ]
+        before, after = self.round_trip(rows)
+        self.assertEqual(before, after)
+
+    def test_a_solo_transition_before_the_cutoff_is_not_reclassified_paired(self):
+        # A mode row switches to solo well before the cutoff; the heartbeats
+        # that follow it land after the cutoff. If the transition is lost,
+        # ModeTimeline defaults back to paired for the carried heartbeats.
+        rows = [
+            mode_row(80000, "solo"),
+            prompt_row(86500),
+            prompt_row(87000),
+        ]
+        before, after = self.round_trip(rows)
+        self.assertEqual(before, after)
+
+    def test_a_paired_heartbeat_gap_straddling_the_cutoff_is_unchanged(self):
+        rows = [prompt_row(86300), prompt_row(86500)]
+        before, after = self.round_trip(rows)
+        self.assertEqual(before, after)
+
+
 if __name__ == "__main__":
     unittest.main()

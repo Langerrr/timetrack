@@ -16,6 +16,7 @@ two tools' worth of TOOL time, and a subagent's own AGENT time stands
 beside its parent's.
 """
 
+import time
 from typing import Dict, Iterable, List, Tuple
 
 from .effort import effort_spans
@@ -69,7 +70,8 @@ def compact(rows, cutoff, options):
         if row.start >= cutoff:
             carry.append(_carry_line(row))
         elif row.kind == "span" and row.end > cutoff:
-            carry.append(_carry_line(row._replace(start=cutoff)))
+            carry.append(_carry_line(row._replace(
+                start=cutoff, iso=time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(cutoff)))))
 
     past = [r for r in rows if r.start < cutoff]
     if not past:
