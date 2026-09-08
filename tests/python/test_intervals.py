@@ -69,6 +69,9 @@ class TestSplitDays(unittest.TestCase):
             [(0, (50, 100)), (100, (100, 200)), (200, (200, 250))],
         )
 
+    def test_no_boundaries_yields_nothing(self):
+        self.assertEqual(split_days([(0, 10)], []), [])
+
 
 if __name__ == "__main__":
     unittest.main()

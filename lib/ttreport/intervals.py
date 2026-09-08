@@ -45,6 +45,8 @@ def split_days(spans, boundaries):
     # type: (Iterable[Span], Sequence[int]) -> List[Tuple[int, Span]]
     out = []
     ordered = sorted(boundaries)
+    if not ordered:
+        return []
     for start, end in spans:
         cursor = start
         while cursor < end:
