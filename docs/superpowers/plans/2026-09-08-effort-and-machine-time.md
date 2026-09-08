@@ -476,10 +476,11 @@ git commit -m "Add interval union and sum"
 
 Three shell functions are added: `tt_fingerprint STRING` prints 8 hex characters, `tt_solo_commands` prints the configured trigger list, and `tt_classify_prompt PROMPT SESSION` prints `CLASS<tab>FINGERPRINT`.
 
-Classification rules, in order:
+Classification rules, in order. The recorded-fingerprint test comes before the command-word test: a replayed `/loop` wake-up still begins with its command word, so checking the word first would re-classify every wake-up as a fresh trigger and never as a continuation.
+
 1. Prompt is empty or the event is not `UserPromptSubmit` → `-`, fingerprint `-`.
-2. Prompt's first word, stripped of a leading `/` and of any `plugin:` prefix, is in `TT_SOLO_COMMANDS` → `trigger`. The fingerprint is recorded, and `tt` writes a `solo` mode row for this session.
-3. A `trigger` fingerprint is already recorded for this session and this prompt's fingerprint matches it → `machine`. A replayed `/loop` wake-up lands here.
+2. A `trigger` fingerprint is already recorded for this session and this prompt's fingerprint matches it → `machine`. A replayed `/loop` wake-up lands here.
+3. Prompt's first word, stripped of a leading `/` and of any `plugin:` prefix, is in `TT_SOLO_COMMANDS` → `trigger`. The fingerprint is recorded, and `tt` writes a `solo` mode row for this session.
 4. Otherwise → `human`.
 
 The recorded trigger fingerprint lives at `$TT_HOME/trigger/<session>`, written when rule 2 fires and removed on `SessionEnd`.
