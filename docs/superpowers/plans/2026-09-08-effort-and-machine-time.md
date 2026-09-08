@@ -287,7 +287,7 @@ git commit -m "Parse the event log into typed rows"
 - Consumes: nothing.
 - Produces: `union(spans: Iterable[Tuple[int, int]]) -> List[Tuple[int, int]]`, `total(spans) -> int`, `clip(spans, since: int, upto: int) -> List[Tuple[int, int]]`, `split_days(spans, boundaries: Sequence[int]) -> List[Tuple[int, Tuple[int, int]]]`.
 
-`union` merges overlapping and touching spans and drops empty ones. `total` sums span lengths without merging — callers pass an already-unioned list when they want union semantics, and a raw list when they want a sum. `split_days` returns `(boundary_start, span)` pairs, cutting each span at every boundary that falls inside it.
+`union` merges overlapping and touching spans and drops empty ones. `total` sums span lengths without merging — callers pass an already-unioned list when they want union semantics, and a raw list when they want a sum. `split_days` returns `(boundary_start, span)` pairs, cutting each span at every boundary that falls inside it. The portion of a span lying before the first boundary belongs to no reported day and is discarded; the remainder is still cut and returned.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -353,6 +353,16 @@ class TestSplitDays(unittest.TestCase):
 
     def test_span_before_the_first_boundary_is_dropped(self):
         self.assertEqual(split_days([(0, 50)], [100, 200]), [])
+
+    def test_span_straddling_the_first_boundary_keeps_its_tail(self):
+        self.assertEqual(split_days([(50, 150)], [100, 200]),
+                         [(100, (100, 150))])
+
+    def test_span_crossing_several_boundaries_is_cut_at_each(self):
+        self.assertEqual(
+            split_days([(50, 250)], [0, 100, 200]),
+            [(0, (50, 100)), (100, (100, 200)), (200, (200, 250))],
+        )
 
 
 if __name__ == "__main__":
@@ -420,8 +430,12 @@ def split_days(spans, boundaries):
         while cursor < end:
             index = bisect.bisect_right(ordered, cursor) - 1
             if index < 0:
-                # Before the first boundary: outside every reported day.
-                break
+                # Before the first boundary: that prefix belongs to no
+                # reported day, so skip to the first one and cut the rest.
+                cursor = ordered[0]
+                if cursor >= end:
+                    break
+                continue
             day = ordered[index]
             nxt = ordered[index + 1] if index + 1 < len(ordered) else end
             finish = min(end, nxt)
