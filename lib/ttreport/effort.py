@@ -72,6 +72,14 @@ def presence_groups(rows):
         if not observed:
             continue
         for scope in scopes:
+            # A carried session has already settled everything before its
+            # last heartbeat. Older terminal commands remain available only
+            # to newly observed sessions; replaying them here could bridge a
+            # session-specific solo transition that was already compacted.
+            first = observed[0]
+            if (first.kind == 'state' and first.event == STATE_HEARTBEAT and
+                    scope.start <= first.start):
+                continue
             # The latest known location applies until a session next moves.
             target = observed[0]
             for row in observed:

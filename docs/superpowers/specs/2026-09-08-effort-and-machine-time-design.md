@@ -218,8 +218,13 @@ The event log keeps its current row kinds and columns. Three additions:
   command.
 
 Compaction keeps its daily rollover, its migration path and its validation. The
-carried state narrows to open lifecycle brackets and the last heartbeat per
-session.
+carried state retains open lifecycle brackets and the last heartbeat per
+observed session. Session-less mode transitions also remain available across
+rollovers: a session first observed later can inherit terminal heartbeats only
+with the intervening solo boundaries on overlapping scopes intact. This
+transition history grows with mode commands, while raw hook history is discarded.
+Already-carried sessions do not replay terminal heartbeats at or before their
+retained heartbeat.
 
 ## Migration
 

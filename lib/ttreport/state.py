@@ -7,7 +7,7 @@ heartbeat arrives; canonical project union absorbs already-known seconds.
 
 from typing import List
 
-from .effort import presence_groups
+from .effort import presence_groups, _scoped_heartbeat
 from .events import Row, STATE_HEARTBEAT
 from .machine import MachineSpans
 from .modes import ModeTimeline, SOLO
@@ -30,7 +30,13 @@ def write_lines(past, cutoff, checkin_window, max_active, machine_result):
     A solo episode also carries its initial attribution so extending its
     final heartbeat after rollover cannot move its effort to another path.
     """
-    lines = []  # type: List[str]
+    # A new session may first appear after rollover, then inherit presence
+    # from older overlapping terminal scopes. Their complete transition
+    # sequence preserves solo boundaries between those heartbeats. Keep only
+    # these mode facts, never raw hook history; this history grows with the
+    # number of terminal mode commands.
+    lines = ['\t'.join(str(field) for field in row)
+             for row in past if _scoped_heartbeat(row)]  # type: List[str]
 
     from .effort import episode_location
     timeline = ModeTimeline.from_rows(past)
@@ -50,7 +56,7 @@ def write_lines(past, cutoff, checkin_window, max_active, machine_result):
 
     from .events import parse_line
     for key, last in last_by_key.items():
-        if last.start >= cutoff:
+        if last.start >= cutoff or _scoped_heartbeat(last):
             continue
         mode = timeline.at(last.stream, last.start, last.project, last.subpath)
         carried = parse_line(_line(last.start, 0, STATE_HEARTBEAT,

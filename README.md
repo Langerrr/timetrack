@@ -359,12 +359,18 @@ Each machine has two TAB-separated files:
   local days retain canonical `coverage` runs for effort and additive `total`
   rows for finalized machine time. Existing duration-only totals remain readable.
 - `current-<machine>.tsv` contains detailed `beat`, `mode`, and `span` rows for the
-  current local day. It is gitignored.
+  current local day, plus carried state and session-less mode transitions from
+  earlier days. It is gitignored.
 
 On the first hook, manual entry, or report after midnight, `tt` reconstructs the
 completed day, merges it into the compact file, and removes those detailed rows.
-Internal `state` rows retain the last heartbeat and unresolved lifecycle
-openings until later evidence resolves them, even across several rollovers.
+Internal `state` rows retain each observed session's last heartbeat and unresolved
+lifecycle openings until later evidence resolves them, even across several rollovers.
+Session-less `mode` transitions are retained separately: a session first observed
+after rollover can inherit older terminal presence, including solo boundaries
+on overlapping parent and nested paths. This transition history grows with mode
+commands; raw hook history is still discarded. Already-carried sessions resume
+from their own heartbeat instead of replaying older terminal presence.
 Machine estimates remain provisional in this state, so a later matching close
 can replace a capped estimate with the full duration. Closed tool coverage
 needed to subtract from pending agent work is coalesced, as are pending closed
