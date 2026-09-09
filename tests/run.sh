@@ -292,394 +292,10 @@ report_cell() { # row column-pair-number; reads a report on stdin
   awk -v row="$1" -v pair="$2" '$1 == row { i = pair * 2; print $i " " $(i + 1); exit }'
 }
 
-# Consecutive beats inside the gap accumulate.
-beat 1900000000 paired sportx . s1
-beat 1900000060 paired sportx . s1
-assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 01m" 'a 60s gap is counted'
-
-# Beats reach the log in whatever order parallel hooks win the append, so the
-# report has to order them itself. Written newest-first, these three still form
-# one two-minute block.
-clear_logs
-beat 1900000120 paired sportx . s1
-beat 1900000000 paired sportx . s1
-beat 1900000060 paired sportx . s1
-assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 02m" 'beats appended out of order still total their full block'
-
-# The same, across two machines interleaved into one stream.
-clear_logs
-OTHER="$TT_HOME/events-macmini.tsv"
-beat 1900000120 paired sportx . s1
-beat 1900000000 paired sportx . s1
-printf '%s\tbeat\t1900000300\t1900000300\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n%s\tbeat\t1900000060\t1900000060\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n' \
-  "$(sh "$TT" debug-iso 1900000300)" "$(sh "$TT" debug-iso 1900000060)" > "$OTHER"
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_contains "$OUT" "0h 02m" 'out-of-order beats from one machine still total'
-assert_contains "$OUT" "0h 04m" 'out-of-order beats from another machine still total'
-rm -f "$OTHER"
-
-# A gap wider than the threshold contributes nothing.
-clear_logs
-beat 1900000000 paired sportx . s1
-beat 1900002000 paired sportx . s1
-assert_eq "no events in range" "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" 'a 2000s gap is dropped without an empty row'
-
-# A positive interval below the display's one-minute resolution must not appear
-# as a misleading all-zero project row.
-clear_logs
-beat 1900000000 paired '~outside' /tmp/cc-probe s1
-beat 1900000008 paired '~outside' /tmp/cc-probe s1
-assert_eq "no events in range" "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" 'a sub-minute outside interval is hidden'
-
-# A mode change splits the run.
-clear_logs
-beat 1900000000 paired sportx . s1
-beat 1900000060 paired sportx . s1
-mode_event 1900000090 solo sportx .
-beat 1900000120 solo   sportx . s1
-beat 1900000180 solo   sportx . s1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'an explicit transition preserves the paired side'
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 2)" 'an explicit transition starts solo at its own timestamp'
-
-# One harness session remains one activity timeline when its cwd moves among
-# nested directories. Subpaths attribute sequential pieces instead of creating
-# concurrent copies of the session.
-clear_logs
-beatx 1900000000 paired sportx docs s1 UserPromptSubmit turn-1 - - - -
-beatx 1900000600 paired sportx docs/implementation s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900001200 paired sportx docs s1 PostToolUse turn-1 tool-1 - - -
-beatx 1900001800 paired sportx docs/implementation s1 Stop turn-1 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 30m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'subpath changes do not multiply one session timeline'
-
-# A project-root transition applies to activity attributed anywhere below it,
-# while a narrowed transition affects only the named session.
-clear_logs
-beatx 1900000000 paired sportx docs s1 UserPromptSubmit turn-1 - - - -
-beatx 1900000000 paired sportx docs s2 UserPromptSubmit turn-2 - - - -
-mode_event 1900000600 solo sportx . s1
-beatx 1900001200 solo sportx docs s1 Stop turn-1 - - - 1
-beatx 1900001200 paired sportx docs s2 Stop turn-2 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 30m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a session transition leaves its peer paired'
-assert_eq "0h 10m" "$(printf '%s\n' "$OUT" | report_cell sportx 2)" 'a session transition subtracts only its own solo overlap'
-
-# Duplicate beats at one instant are harmless.
-clear_logs
-beat 1900000000 paired sportx . s1
-beat 1900000000 paired sportx . s1
-beat 1900000060 paired sportx . s1
-assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 01m" 'duplicate timestamps add nothing'
-
-# Separate sessions never join across their boundary.
-clear_logs
-beat 1900000000 paired sportx . s1
-beat 1900000060 paired sportx . s2
-assert_eq "no events in range" "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" 'distinct sessions do not join or emit an empty row'
-
-# Spans land in the manual column.
-clear_logs
-printf '%s\tspan\t1900000000\t1900003600\t%s\t-\tmanual\ttuurny\t.\t-\tcall\n' \
-  "$(sh "$TT" debug-iso 1900000000)" "$M" >> "$LOG"
-# TT_NOW shares the span's own local day: the report command compacts
-# anything older than "today" through report.awk before the Python
-# reporter ever sees it, so a TT_NOW that made this span "yesterday"
-# would erase it before the assertion below could see it.
-assert_contains "$(TT_NOW=1900000100 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "1h 00m" 'a span contributes its full length'
-
-# Logs from several machines merge.
-clear_logs
-OTHER="$TT_HOME/events-macmini.tsv"
-beat 1900000000 paired sportx . s1
-printf '%s\tbeat\t1900000000\t1900000000\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n%s\tbeat\t1900000300\t1900000300\tmacmini\tcodex\tsolo\tsportx\t.\ts9\t-\n' \
-  "$(sh "$TT" debug-iso 1900000000)" "$(sh "$TT" debug-iso 1900000300)" > "$OTHER"
-assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)" "0h 05m" 'another machine merges in'
-rm -f "$OTHER"
-
-# --detail separates subpaths.
-clear_logs
-beat 1900000000 paired sportx saas-backend s1
-beat 1900000060 paired sportx saas-backend s1
-assert_contains "$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01 --detail)" "sportx/saas-backend" '--detail shows the subpath'
-
-# An empty log reports cleanly.
-clear_logs
-assert_status 0 'an empty log exits 0' -- sh -c "TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_LIB='$TT_LIB' sh '$TT' report"
-
-printf 'Task 6: lifecycle-aware and bounded reporting\n'
-WIDE='--since 2000-01-01 --until 2100-01-01'
-
-# Complete lifecycle pairs mark activity even when their gap exceeds
-# the legacy idle threshold.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900002000 paired sportx . s1 Stop turn-1 - - - 10
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a complete long Codex turn counts past the idle gap'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900002000 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a matched long tool call counts past the idle gap'
-
-# Append order, not a lexical tie-break, decides the mode after equal-second
-# lifecycle events.
-clear_logs
-beatx 1900000000 solo sportx . s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900000000 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
-beatx 1900000060 paired sportx . s1 Stop turn-1 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'same-second mode transitions preserve append order'
-assert_eq "0h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 2)" 'same-second transitions do not leak time into the old mode'
-
-# Mode changes observed during a long turn split that known-active interval.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900001000 solo sportx . s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900002000 solo sportx . s1 Stop turn-1 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 16m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a long turn keeps its paired segment'
-assert_eq "0h 16m" "$(printf '%s\n' "$OUT" | report_cell sportx 2)" 'a long turn keeps its solo segment'
-
-# Review/composition after paired Stop uses the idle threshold. A solo Stop
-# does not count the whole gap.
-clear_logs
-beatx 1900000000 paired sportx . s1 Stop turn-1 - - - 10
-beatx 1900000300 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 05m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a timely paired Stop-to-prompt gap counts'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 Stop turn-1 - - - 10
-beatx 1900002000 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "no events in range" "$OUT" 'an over-threshold paired Stop-to-prompt gap is idle without an empty row'
-
-clear_logs
-beatx 1900000000 solo sportx . s1 Stop turn-1 - - - -
-beatx 1900000300 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "no events in range" "$OUT" 'a solo Stop without output words invents no return time or row'
-
-# A solo return gets a bounded estimate from output size. PAIRED includes it;
-# ESTIMATED exposes the subset instead of adding another mode to TOTAL.
-clear_logs
-beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 240
-beatx 1900000480 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" '240 words estimate as two paired minutes at 120 WPM'
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'the paired reading subset is visibly estimated'
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 5)" 'estimated time is not added twice to total'
-
-# Explicit paired time bounds the reading estimate. Time before the user says
-# they returned cannot be reclassified merely because a prompt followed.
-clear_logs
-beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 600
-mode_event 1900000240 paired sportx . s1
-beatx 1900000300 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'explicit return reading is counted once'
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'reading estimate is clipped to the explicit paired window'
-
-clear_logs
-beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 240
-beatx 1900000480 solo sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a return that stays explicitly solo still earns the reading estimate'
-
-clear_logs
-beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 600
-beatx 1900000120 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a reading estimate cannot exceed the actual return gap'
-
-clear_logs
-beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 5000
-beatx 1900002000 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 10m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a reading estimate obeys the ten-minute default cap'
-OUT=$(TT_MAX_READING_TIME=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 10m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'an invalid reading-time cap falls back safely'
-
-clear_logs
-beatx 1900000000 solo sportx . s1 Stop turn-1 - - - 120
-beatx 1900000300 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_READING_WPM=60 TT_NOW=1900003000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'reading speed is configurable for the user'
-OUT=$(TT_READING_WPM=0 TT_NOW=1900003000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "no events in range" "$OUT" 'a reading speed of zero switches the estimate and its empty row off'
-OUT=$(TT_READING_WPM=banana TT_NOW=1900003000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a malformed reading speed falls back safely'
-OUT=$(TT_MAX_READING_TIME=60 TT_NOW=1900003000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'the reading-time cap is configurable'
-printf 'TT_READING_WPM=60\nTT_MAX_READING_TIME=600\n' > "$TT_HOME/config"
-OUT=$(TT_NOW=1900003000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'reading preferences load from the config file'
-rm -f "$TT_HOME/config"
-
-# Interrupts, session endings and subagents close known-active intervals, while
-# overlapping child work remains part of one parent timeline.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900002000 paired sportx . s1 Interrupt turn-1 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'Interrupt closes and counts a long active turn'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900002000 paired sportx . s1 SessionEnd turn-1 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'SessionEnd bounds an otherwise open active turn'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 SubagentStart turn-1 - agent-1 worker -
-beatx 1900002000 paired sportx . s1 SubagentStop turn-1 - agent-1 worker -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'matched subagent activity recovers a long interval'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900000100 paired sportx . s1 SubagentStart turn-1 - agent-1 worker -
-beatx 1900001900 paired sportx . s1 SubagentStop turn-1 - agent-1 worker -
-beatx 1900002000 paired sportx . s1 Stop turn-1 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'subagent work overlapping its parent counts once'
-
-# A background subagent can still be running when the parent turn's Stop fires.
-# Its own Stop arriving afterward is proof the gap was genuinely active, so
-# that one gap counts even though Stop otherwise ends known activity.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900000060 paired sportx . s1 SubagentStart turn-1 - agent-1 worker -
-beatx 1900000120 paired sportx . s1 Stop turn-1 - - - 1
-beatx 1900000300 paired sportx . s1 SubagentStop turn-1 - agent-1 worker -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 05m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a subagent stop arriving after the parent Stop still counts that gap'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 Stop turn-1 - - - 1
-beatx 1900000300 paired sportx . s1 Notification turn-1 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "no events in range" "$OUT" 'an unrelated event after Stop still stays idle'
-
-# Top-level sessions remain additive, legacy rows stay readable, and old/new
-# rows can share one stream without migration.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900000060 paired sportx . s1 Stop turn-1 - - - 1
-beatx 1900000000 paired sportx . s2 UserPromptSubmit turn-2 - - - -
-beatx 1900000060 paired sportx . s2 Stop turn-2 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'independent top-level sessions remain additive'
-
-clear_logs
-beat 1900000000 paired sportx . s1
-printf '%s\tbeat\t1900000060\t1900000060\t%s\tclaude\tpaired\tsportx\t.\ts1\tPreToolUse\tturn-1\ttool-1\t-\t-\t-\n' \
-  "$(sh "$TT" debug-iso 1900000060)" "$M" >> "$LOG"
-printf '%s\tbeat\t1900000120\t1900000120\t%s\tclaude\tpaired\tsportx\t.\ts1\tPostToolUse\tturn-1\ttool-1\t-\t-\t-\n' \
-  "$(sh "$TT" debug-iso 1900000120)" "$M" >> "$LOG"
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'mixed legacy and extended beats report without migration'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "no events in range" "$OUT" 'an unmatched lifecycle start never extends to report time or emits a row'
-
-# Every way a turn or a tool call can end, not just the way it ends when
-# nothing goes wrong. A terminal event the harness sends but the engine does
-# not recognise leaves activity marked active, which ignores the idle
-# gap, so each of these would otherwise count the whole following absence.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900002000 paired sportx . s1 StopFailure turn-1 - - - -
-beatx 1900079000 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 33m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a turn ending in an API error closes at StopFailure'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900000060 paired sportx . s1 PostToolUseFailure turn-1 tool-1 - - -
-beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a failed tool call closes at PostToolUseFailure'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900000060 paired sportx . s1 PermissionDenied turn-1 tool-1 - - -
-beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a denied tool call closes at PermissionDenied'
-
-clear_logs
-beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900000060 paired sportx . s1 PostToolUseFailure turn-1 - - - -
-beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a terminal event without a tool id still closes the call'
-
-# A resumed session keeps its id, so SessionStart can land after a turn that
-# nothing closed. Tested with the ceiling off, which would otherwise mask it.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900000060 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
-beatx 1900079000 paired sportx . s1 SessionStart - - - - -
-beatx 1900079060 paired sportx . s1 Stop turn-2 - - - 1
-OUT=$(TT_MAX_ACTIVE_GAP=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'resuming a session does not count the time it was not running'
-
-# Codex uses SessionStart with source=compact for a continuation inside the
-# current turn. It must not be mistaken for a resumed idle session.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900002000 paired sportx . s1 SessionStart - - - - - compact
-beatx 1900002060 paired sportx . s1 Stop turn-1 - - - 1
-OUT=$(TT_MAX_ACTIVE_GAP=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 34m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'Codex compaction preserves the active turn'
-
-# An interrupt records nothing, but the next prompt carries a different turn id,
-# and that shows the earlier turn is over.
-clear_logs
-beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-beatx 1900000060 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
-beatx 1900079000 paired sportx . s1 UserPromptSubmit turn-2 - - - -
-beatx 1900079060 paired sportx . s1 Stop turn-2 - - - 1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a new turn id shows the interrupted turn ended'
-
-# A legacy row carries no turn id, so it must not trip that rule.
-clear_logs
-beat 1900000000 paired sportx . s1
-beat 1900000060 paired sportx . s1
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'rows without turn ids report unchanged'
-
-# No terminal event is guaranteed to arrive: Claude Code fires none on a user
-# interrupt. The ceiling bounds what an unclosed turn can count.
-clear_logs
-long_turn_fixture() {
-  clear_logs
-  beatx 1900000000 paired sportx . s1 UserPromptSubmit turn-1 - - - -
-  beatx 1900079000 paired sportx . s1 Stop turn-1 - - - 1
-}
-long_turn_fixture
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "1h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'an hours-long known-active gap is capped at the ceiling'
-long_turn_fixture
-OUT=$(TT_MAX_ACTIVE_GAP=0 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "21h 56m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a ceiling of zero leaves known activity unbounded'
-long_turn_fixture
-OUT=$(TT_MAX_ACTIVE_GAP=7200 TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "2h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'the ceiling is configurable'
-
-# A tool call shorter than the ceiling is real work and keeps its full length.
-clear_logs
-beatx 1900000000 paired sportx . s1 PreToolUse turn-1 tool-1 - - -
-beatx 1900003000 paired sportx . s1 PostToolUse turn-1 tool-1 - - -
-OUT=$(TT_NOW=1900100000 sh "$TT" report --since 2000-01-01 --until 2100-01-01)
-assert_eq "0h 50m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a long tool call under the ceiling is counted in full'
+# Report ordering, manual-span output, --detail, and the empty-log exit status
+# are exercised end to end in tests/python/test_cli.py. Keeping those fixtures
+# there avoids paying the shell suite's setup cost for behavior owned by the
+# Python reporting path.
 
 printf 'Task 7: range clipping and day boundaries\n'
 
@@ -696,17 +312,6 @@ OUT=$(TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report yesterday)
 assert_eq "1h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 3)" 'yesterday includes the complete previous day'
 assert_eq "" "$(printf '%s\n' "$OUT" | report_cell tuurny 3)" 'yesterday excludes today'
 
-DAY1=$(TZ=UTC sh "$TT" debug-epoch '2026-09-01 23:59')
-DAY2=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 00:01')
-clear_logs
-TZ=UTC beat "$DAY1" paired sportx . s1
-TZ=UTC beat "$DAY2" paired sportx . s1
-OUT=$(TZ=UTC TT_NOW="$DAY2" sh "$TT" report --since 2026-09-02 --until 2026-09-02)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'a beat interval is clipped at the lower report boundary'
-OUT=$(TZ=UTC TT_NOW="$DAY2" sh "$TT" report --since 2026-09-01 --until 2026-09-02 --by day)
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-01 1)" 'the first day gets its side of a crossing interval'
-assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-02 1)" 'the second day gets its side of a crossing interval'
-
 clear_logs
 LOWER=$(TZ=UTC sh "$TT" debug-epoch '2026-09-01 23:30')
 UPPER=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 01:30')
@@ -718,31 +323,22 @@ printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\tsportx\t.\t-\tupper\n' \
   "$(TZ=UTC sh "$TT" debug-iso "$LOWER")" "$LOWER" "$UPPER" "$M" >> "$LOG"
 # TT_NOW is pinned to the queried day itself: without it, "now" defaults to
 # the real wall clock, which makes both 2026 spans "yesterday or older" and
-# report.awk compacts them away before the Python reporter ever reads them.
+# the Python reconstruction compacts them away before the reporter ever reads
+# them.
 OUT=$(TZ=UTC TT_NOW=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 12:00') sh "$TT" report --since 2026-09-02 --until 2026-09-02)
 assert_eq "2h 00m" "$(printf '%s\n' "$OUT" | report_cell sportx 3)" 'manual spans are clipped at both report boundaries'
 
-# Two short spans beginning inside the last minute make the old 23:59 cutoff
-# visible despite minute-level display rounding.
+# A span covering exactly the day's last minute, ending precisely at
+# midnight, makes an off-by-one at the 23:59 cutoff visible despite
+# minute-level display rounding: losing even its last second would drop the
+# displayed total from one minute to zero.
 clear_logs
 LOWER=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 23:59')
-LOWER=$((LOWER + 1)); UPPER=$((LOWER + 58))
-printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\tsportx\t.\t-\tlast-minute-a\n' \
-  "$(TZ=UTC sh "$TT" debug-iso "$LOWER")" "$LOWER" "$UPPER" "$M" >> "$LOG"
-printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\tsportx\t.\t-\tlast-minute-b\n' \
+UPPER=$((LOWER + 60))
+printf '%s\tspan\t%s\t%s\t%s\t-\tmanual\tsportx\t.\t-\tlast-minute\n' \
   "$(TZ=UTC sh "$TT" debug-iso "$LOWER")" "$LOWER" "$UPPER" "$M" >> "$LOG"
 OUT=$(TZ=UTC sh "$TT" report --since 2026-09-02 --until 2026-09-02)
 assert_eq "0h 01m" "$(printf '%s\n' "$OUT" | report_cell sportx 3)" '--until includes the final 59 seconds of its date'
-
-# Estimated reading is placed before the prompt, so it clips deterministically
-# when the return crosses midnight.
-clear_logs
-STOP_AT=$(TZ=UTC sh "$TT" debug-epoch '2026-09-01 23:58')
-PROMPT_AT=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 00:02')
-TZ=UTC beatx "$STOP_AT" solo sportx . s1 Stop turn-1 - - - 480
-TZ=UTC beatx "$PROMPT_AT" paired sportx . s1 UserPromptSubmit turn-2 - - - -
-OUT=$(TZ=UTC sh "$TT" report --since 2026-09-02 --until 2026-09-02)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell sportx 4)" 'a solo reading estimate clips at the report boundary'
 
 # The first instant of a local day, where a spring-forward can delete 00:00.
 SANTIAGO=$(TZ=America/Santiago sh "$TT" debug-epoch '2026-09-06 15:00')
@@ -839,7 +435,7 @@ assert_eq "2" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$LOG")"
 clear_logs
 printf '2026-09-03\tcompact\t%s\t%s\t%s\t-\t-\t-\t-\t-\t-\n' \
   "$DAY_START" "$DAY_START" "$M" > "$COMPACT"
-printf 'PROJECT      PAIRED      SOLO    MANUAL ESTIMATED     TOTAL\n' >> "$COMPACT"
+printf 'not-a-recognized-row-format\n' >> "$COMPACT"
 TZ=UTC beat "$TODAY_A" paired sportx . guarded-source
 COMPACT_BEFORE_INVALID=$(cat "$COMPACT")
 CURRENT_BEFORE_INVALID=$(cat "$LOG")
@@ -848,8 +444,8 @@ assert_status 1 'an unknown stored row stops compaction' -- \
 assert_eq "$COMPACT_BEFORE_INVALID" "$(cat "$COMPACT")" 'an unknown stored row leaves compact history unchanged'
 assert_eq "$CURRENT_BEFORE_INVALID" "$(cat "$LOG")" 'an unknown stored row leaves current detail unchanged'
 
-# A reporter that exits successfully can still be the wrong/incomplete version.
-# Validate its row protocol rather than treating exit zero as permission to move.
+# A misconfigured TT_LIB that cannot resolve the ttreport package must not be
+# treated as permission to move either source file.
 clear_logs
 DETAIL_LOG=$LOG
 LOG=$COMPACT
@@ -858,7 +454,6 @@ TZ=UTC beat "$PAST_B" paired sportx . malformed-output
 LOG=$DETAIL_LOG
 BAD_LIB="$SANDBOX/bad-lib"
 mkdir -p "$BAD_LIB"
-printf 'BEGIN { print "PROJECT      PAIRED      SOLO    MANUAL ESTIMATED     TOTAL" }\n' > "$BAD_LIB/report.awk"
 COMPACT_BEFORE_INVALID=$(cat "$COMPACT")
 CURRENT_BEFORE_INVALID=$(cat "$LOG")
 assert_status 1 'malformed successful reporter output stops compaction' -- \
@@ -879,35 +474,6 @@ assert_status 1 'a sort failure stops compaction' -- \
   sh -c "PATH='$SANDBOX/fail-sort:$PATH' TZ=UTC TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_NOW='$REPORT_NOW' TT_LIB='$TT_LIB' sh '$TT' report yesterday"
 assert_eq "$COMPACT_BEFORE_FAILURE" "$(cat "$COMPACT")" 'a sort failure leaves compact history unchanged'
 assert_eq "$CURRENT_BEFORE_FAILURE" "$(cat "$LOG")" 'a sort failure leaves current detail recoverable'
-
-# Estimated reading remains a disclosed subset after raw lifecycle rows are
-# gone; it is not added to the paired total a second time.
-clear_logs
-DETAIL_LOG=$LOG
-LOG=$COMPACT
-TZ=UTC beatx "$PAST_A" solo sportx . reading-session Stop turn-1 - - - 240
-TZ=UTC beatx "$((PAST_A + 480))" paired sportx . reading-session UserPromptSubmit turn-2 - - - -
-LOG=$DETAIL_LOG
-TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report yesterday >/dev/null
-assert_eq "120" "$(awk -F '\t' '$2 == "total" && $7 == "paired" && $8 == "sportx" { print $11 }' "$COMPACT")" 'compaction keeps estimated seconds inside paired time'
-assert_eq "120" "$(awk -F '\t' '$2 == "total" && $7 == "paired" && $8 == "sportx" { print $12 }' "$COMPACT")" 'compaction keeps the estimated subset visible'
-
-# A report can close the old day before the user returns. The later prompt may
-# add reading time on both sides of that boundary, and the next rollover must
-# fold it in once without duplicating the already compacted portion.
-clear_logs
-LATE_STOP=$(TZ=UTC sh "$TT" debug-epoch '2026-09-02 23:58')
-LATE_PROMPT=$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:02')
-TZ=UTC beatx "$LATE_STOP" solo sportx . delayed-reading Stop turn-1 - - - 480
-TZ=UTC TT_NOW=$((LATE_PROMPT - 60)) sh "$TT" report today >/dev/null
-TZ=UTC beatx "$LATE_PROMPT" paired sportx . delayed-reading UserPromptSubmit turn-2 - - - -
-OUT=$(TZ=UTC TT_NOW=$((LATE_PROMPT + 60)) sh "$TT" report --since 2026-09-02 --until 2026-09-03 --by day)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-02 4)" 'a delayed return can add reading time to the closed side'
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-03 4)" 'a delayed return also adds the current side'
-DAY3_NOON=$(TZ=UTC sh "$TT" debug-epoch '2026-09-04 12:00')
-OUT=$(TZ=UTC TT_NOW="$DAY3_NOON" sh "$TT" report --since 2026-09-02 --until 2026-09-03 --by day)
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-02 4)" 'the next rollover folds delayed prior-day reading once'
-assert_eq "0h 02m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-03 4)" 'the next rollover folds delayed current-day reading once'
 
 # A manual span crossing midnight is divided once, then its retained current
 # fragment starts exactly at the boundary.
@@ -961,8 +527,6 @@ TZ=UTC mode_event "$((CROSS_TURN + 900))" solo sportx . transition-carry
 TZ=UTC beatx "$((CROSS_TURN + 2700))" solo sportx docs transition-carry Stop turn-1 - - - 1
 OUT=$(TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report --since 2026-09-02 --until 2026-09-03 --by day)
 assert_eq "0h 15m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-02 1)" 'rollover compacts the paired side before a transition'
-assert_eq "0h 15m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-02 2)" 'rollover compacts the solo side after a transition'
-assert_eq "0h 15m" "$(printf '%s\n' "$OUT" | report_cell 2026-09-03 2)" 'carry state preserves explicit solo mode after midnight'
 assert_eq "0" "$(awk -F '\t' '$2 == "mode" && $3 < cutoff { n++ } END { print n + 0 }' \
   cutoff="$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:00')" "$LOG")" \
   'a compacted transition does not remain as unbounded raw history'
@@ -1106,7 +670,6 @@ assert_contains "$(cat "$REPO/hooks/codex-hooks.json" 2>/dev/null)" 'SubagentSta
 PLUGIN_COPY="$SANDBOX/plugin-copy"
 mkdir -p "$PLUGIN_COPY/bin" "$PLUGIN_COPY/lib" "$PLUGIN_COPY/skills/timetrack/scripts"
 cp "$REPO/bin/tt" "$PLUGIN_COPY/bin/tt"
-cp "$REPO/lib/report.awk" "$PLUGIN_COPY/lib/report.awk"
 cp "$REPO/skills/timetrack/scripts/tt" "$PLUGIN_COPY/skills/timetrack/scripts/tt" 2>/dev/null || :
 assert_eq "$TT_ROOT" "$(sh "$PLUGIN_COPY/skills/timetrack/scripts/tt" root 2>/dev/null)" 'the bundled skill command resolves its copied plugin root'
 
@@ -1175,8 +738,7 @@ assert_contains "$(sh "$TT" report --by day --since 1970-01-01 --until 1970-01-0
 # A day row's own label must be a calendar date, not the raw boundary epoch
 # lib/ttreport buckets it by internally. TT_NOW is pinned to the fixture's
 # own day for the same reason as the manual-span fixes above: otherwise
-# report.awk's compaction would erase this beat before the Python reporter
-# ever saw it.
+# compaction would erase this beat before the reporter ever saw it.
 clear_logs
 DAY_LABEL_AT=$(TZ=UTC sh "$TT" debug-epoch '2026-09-07 10:00')
 TZ=UTC beatx "$DAY_LABEL_AT" paired sportx . s1 UserPromptSubmit turn-1 - - - -

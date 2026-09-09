@@ -6,8 +6,8 @@ harnesses. It runs as a plugin: once
 installed, hooks in Claude Code and Codex fire on their own and the log fills
 itself. Nothing to start, nothing to stop.
 
-Everything is POSIX shell and `awk`. Each machine uses one compact history file
-and one current-day detail file.
+Capture uses POSIX shell and `awk`; reporting and compaction use Python. Each
+machine uses one compact history file and one current-day detail file.
 
 ## What it records
 
@@ -19,30 +19,36 @@ Every event lands in one row. There are three kinds:
 - **`mode`** — written by `tt solo` or `tt paired`, timestamping an explicit
   human-presence transition.
 
-Reports rebuild intervals from beats. Complete turns, tool calls and subagent
-runs are known-active intervals even when they exceed `TT_IDLE_GAP`. For legacy
-or incomplete lifecycle data, two consecutive beats from the same machine,
-harness and session contribute their difference only when they are
-no more than `TT_IDLE_GAP` apart (1800 seconds by default). A final unmatched
-start never extends to report time, so a killed terminal or crashed harness
-leaves nothing dangling.
+Reports calculate two separate measures. **Effort** is your engagement and is
+bounded by one human timeline within a project. Concurrent sessions for one
+project union, while attention shared across different projects is credited to
+each project. **Machine time** is summed over main sessions and subagents. It is
+split into `AGENT` time (worker elapsed time less overlapping tool intervals)
+and `TOOL` time (the sum of tool-call brackets), so it can exceed wall-clock
+time. Machine time is never added to effort.
 
-Not every ending gets recorded — Claude Code fires no hook when you interrupt —
-so a single gap inside an open turn or tool call counts at most
-`TT_MAX_ACTIVE_GAP` (3600 seconds by default). A prompt carrying a new turn id
-closes the turn before it. A `SessionStart` also closes everything open when a
-session starts, resumes, or clears; Codex's mid-turn `source=compact`
-continuation preserves the current turn.
+Effort comes from human heartbeats: a human `UserPromptSubmit`, a `tt paired` or
+`tt solo` command, or a `tt add` span. `SessionStart`, tool events, subagent
+events, and machine-generated continuations are not human heartbeats. During an
+automatic solo run, a replay of the prompt that started the run is recognized
+by its fingerprint and excluded; a different prompt is a human check-in.
+
+Machine time comes from lifecycle brackets. Main sessions run from
+`UserPromptSubmit` to `Stop`; tool calls run from `PreToolUse` to `PostToolUse`;
+and the bracket of a subagent-spawning tool measures the child worker. An
+unclosed bracket contributes at most `TT_MAX_ACTIVE_GAP` (3600 seconds by
+default). A non-compaction `SessionStart` closes open work for that session.
 
 ### The three modes
 
-| Mode | Means |
+| Mode | Effort credited |
 |---|---|
-| `paired` | You were working alongside the agent. |
-| `solo` | The agent was running while you were elsewhere. |
-| `manual` | Time that involved no agent at all. |
+| `paired` | The interval between consecutive heartbeats, or half of `TT_PRESENCE_GAP` when it runs longer |
+| `solo` | Each check-in episode: its span plus `TT_CHECKIN_WINDOW` |
+| `manual` | The stated span of a `tt add` entry |
 
-`paired` and `solo` apply to agent time and can be **set by hand**:
+`paired` and `solo` control how human heartbeats become effort and can be **set
+by hand**:
 
 ```sh
 tt solo      # heading out, leaving a long run going
@@ -60,23 +66,19 @@ forces path-wide scope. A scope with no explicit mode reads as `paired`; when
 several scopes match, the most recent explicit transition wins.
 
 Mode applies **forward, from the moment you set it**, and remains sticky until
-the matching `tt paired` or `tt solo` command. The command writes a durable mode
-event, so an active interval is split at the command timestamp even when no hook
-fires at that instant. Setting `solo` after a two-hour unattended run does not
-reclassify that run. Reports classify only the overlap with reconstructed agent
-activity; an hour spent away while the agent is idle does not create an hour of
-solo time.
+the matching `tt paired` or `tt solo` command. Setting `solo` after a two-hour
+unattended run does not reclassify that run. In paired mode, the interval
+between heartbeats is the work: reading, thinking, and composing. A gap longer
+than `TT_PRESENCE_GAP` credits half that configured gap, bounding a mislabeled
+absence. In solo mode, heartbeats no more than `TT_CHECKIN_WINDOW` apart form an
+episode; the episode span plus one check-in window is credited.
 
-Submitting a prompt does not change mode: forked agents submit prompts too, so it
-is not a reliable human-return signal. Run `tt paired` when you return. Neither
-Claude Code nor Codex has a hook for scrolling, focusing the composer or
-beginning to type, so when a solo `Stop` contains a final assistant message,
-timetrack stores only its word count. The next prompt on that stream gets a
-reading-time estimate at 120 words per minute, capped at ten minutes and by the
-real Stop-to-prompt gap — whether or not mode was flipped back to `paired`
-first. An explicit `tt paired` inside that gap still narrows the estimate to
-start no earlier than the moment you set it. Reports disclose that estimate as
-a subset of paired time.
+### Automatic solo
+
+Prompts invoking a command in `TT_SOLO_COMMANDS` automatically write a solo
+transition for that session. The default list is `goal,loop,schedule`. Automatic
+solo ends at an explicit `tt paired` or at `SessionEnd`; human check-ins during
+the run earn their check-in windows without ending solo mode.
 
 `manual` is not something you set. Every `tt add` row is `manual`, because a span
 you typed in is by definition time no hook was watching.
@@ -292,8 +294,8 @@ tt hooks-snippet [claude|codex]  print hook config for a hand-set-up machine
 ### Logging time by hand
 
 ```sh
-$ tt add sportx 25m "pairing on the report awk" --at '2026-09-02 16:00'
-2026-09-02T16:00:00-0400	span	1788379200	1788380700	DESKTOP-G7ULRNT	-	manual	sportx	.	-	pairing on the report awk
+$ tt add sportx 25m "pairing on the report" --at '2026-09-02 16:00'
+2026-09-02T16:00:00-0400	span	1788379200	1788380700	DESKTOP-G7ULRNT	-	manual	sportx	.	-	pairing on the report
 ```
 
 Durations parse as `90m`, `1.5h`, `2h30m`, or a bare number read as minutes.
@@ -305,26 +307,26 @@ only its last word is kept. `tt add` prints the row it wrote.
 
 ```sh
 $ tt report yesterday
-PROJECT     PAIRED      SOLO    MANUAL ESTIMATED     TOTAL
-sportx      1h 12m    0h 00m    0h 00m    0h 00m    1h 12m
-TOTAL       1h 12m    0h 00m    0h 00m    0h 00m    1h 12m
+PROJECT      PAIRED   CHECKIN   MANUAL    EFFORT     AGENT      TOOL
+sportx       1h 12m    0h 00m    0h 00m    1h 12m    0h 48m    0h 09m
+TOTAL        1h 12m    0h 00m    0h 00m    1h 12m    0h 48m    0h 09m
 
 $ tt report today
-PROJECT     PAIRED      SOLO    MANUAL ESTIMATED     TOTAL
-sportx      0h 10m    0h 00m    3h 30m    0h 03m    3h 40m
-stratos     0h 00m    0h 00m    0h 45m    0h 00m    0h 45m
-TOTAL       0h 10m    0h 00m    4h 15m    0h 03m    4h 25m
+PROJECT      PAIRED   CHECKIN   MANUAL    EFFORT     AGENT      TOOL
+sportx       0h 10m    0h 20m    3h 30m    4h 00m    2h 40m    0h 35m
+stratos      0h 00m    0h 00m    0h 45m    0h 45m    1h 15m    0h 12m
+TOTAL        0h 10m    0h 20m    4h 15m    4h 45m    3h 55m    0h 47m
 
 $ tt report --by day
-DAY            PAIRED      SOLO    MANUAL ESTIMATED     TOTAL
-2026-09-02     0h 10m    0h 00m    4h 15m    0h 03m    4h 25m
-TOTAL          0h 10m    0h 00m    4h 15m    0h 03m    4h 25m
+DAY          PAIRED   CHECKIN   MANUAL    EFFORT     AGENT      TOOL
+2026-09-02   0h 10m    0h 20m    4h 15m    4h 45m    3h 55m    0h 47m
+TOTAL        0h 10m    0h 20m    4h 15m    4h 45m    3h 55m    0h 47m
 ```
 
 With no period, `tt report` covers today. `--detail` breaks each project out by
-sub-directory. `--since` and `--until` take `YYYY-MM-DD`. `ESTIMATED` is already
-included in `PAIRED` and `TOTAL`; it is shown separately to disclose how much of
-the paired total came from solo-output reading estimates.
+sub-directory. `--since` and `--until` take `YYYY-MM-DD`. `EFFORT` is the sum of
+`PAIRED`, `CHECKIN`, and `MANUAL`. `AGENT` and `TOOL` use agent-hours and stand
+apart from that total.
 
 ```sh
 $ tt sessions
@@ -379,7 +381,7 @@ iso_start  kind  start  end  machine  harness  mode  project  subpath  session  
 | 10 | `session` | Harness session id, or `-` for an all-session scope |
 | 11 | `note` | On a `span`, your free-text note (`-` if none). On a `beat`, the hook event name. `mode` uses `-`. |
 
-New beat rows append six lifecycle fields:
+New beat rows append lifecycle and classification fields:
 
 | # | Column | Meaning |
 |---|---|---|
@@ -389,6 +391,9 @@ New beat rows append six lifecycle fields:
 | 15 | `agent_type` | Subagent type or profile, or `-` |
 | 16 | `assistant_words` | Word count of the final message on `Stop`, or `-` |
 | 17 | `session_source` | `SessionStart` source such as `startup`, `resume`, `clear`, or `compact`; otherwise `-` |
+| 18 | `tool_name` | Tool name used to recognize subagent-spawning brackets, or `-` |
+| 19 | `prompt_class` | `human`, `trigger`, or `machine` for a prompt, or `-` |
+| 20 | `fingerprint` | Short prompt fingerprint used to recognize a machine continuation, or `-` |
 
 Column 11 carries different things by kind, and that is deliberate: a span's note
 is what you said about it, a beat's note is which hook produced it
@@ -397,11 +402,11 @@ the other documented lifecycle events). Manual spans and old beats may remain
 eleven columns while migration runs. Raw assistant-message text is never
 persisted.
 
-Compact `total` rows reuse the stable project and mode columns. Column 3 is the
-local day's first epoch, column 4 is the next local-day boundary, column 11 is
-the number of seconds for that mode, and column 12 is the estimated-reading
-subset of a paired total. The first `compact` row stores the current local-day
-marker used for a constant-time rollover check.
+Compact `total` rows reuse the stable project and category columns. Column 3 is
+the local day's first epoch, column 4 is the next local-day boundary, and column
+16 is the number of seconds for `paired`, `checkin`, `manual`, `agent`, or
+`tool`. The first `compact` row stores the current local-day marker used for a
+constant-time rollover check.
 
 Every row holds both epoch seconds and a preformatted local timestamp, so
 reporting compares and sums integers and behaves identically on Linux and macOS.
@@ -435,10 +440,10 @@ already stored for completed days.
 ```
 machine=DESKTOP-G7ULRNT
 TT_ROOT=/home/lan/workspace
-TT_IDLE_GAP=1800
+TT_PRESENCE_GAP=3600
+TT_CHECKIN_WINDOW=1200
 TT_MAX_ACTIVE_GAP=3600
-TT_READING_WPM=120
-TT_MAX_READING_TIME=600
+TT_SOLO_COMMANDS=goal,loop,schedule
 ```
 
 Setting `machine=` explicitly keeps a renamed machine writing to the same pair
@@ -451,13 +456,13 @@ of files. `tt sync pull HOST` looks for both `events-HOST.tsv` and
 |---|---|---|
 | `TT_HOME` | `~/.timetrack` | Where the log, config and modes live |
 | `TT_ROOT` | `~/workspace` | The root that project names are taken under |
-| `TT_IDLE_GAP` | `1800` | Seconds between beats that still count as continuous |
-| `TT_MAX_ACTIVE_GAP` | `3600` | Ceiling on one gap inside an open turn or tool call; `0` removes it |
-| `TT_READING_WPM` | `120` | Personal reading-speed assumption for solo-output estimates; `0` switches the estimate off |
-| `TT_MAX_READING_TIME` | `600` | Maximum seconds added by one solo-output reading estimate |
+| `TT_PRESENCE_GAP` | `3600` | Longest gap between heartbeats counted as continuous paired work |
+| `TT_CHECKIN_WINDOW` | `1200` | Window added to a solo check-in episode and the gap separating episodes |
+| `TT_MAX_ACTIVE_GAP` | `3600` | Ceiling on an agent bracket whose ending was not recorded; `0` removes it |
+| `TT_SOLO_COMMANDS` | `goal,loop,schedule` | Commands that automatically declare a session-scoped solo run |
 | `TT_SESSION_ID` | harness id or `-` | Override the implicit session scope of `solo`/`paired` |
 | `TT_NOW` | — | Override "now" as epoch seconds; used by the tests |
-| `TT_LIB` | `<tt>/../lib` | Where `report.awk` is found |
+| `TT_LIB` | `<tt>/../lib` | Where the `ttreport` Python package is found |
 | `TT_RSYNC` | `rsync` | The rsync `tt sync pull` invokes |
 | `TT_SSH` | `ssh` | The ssh `tt install-remote` invokes |
 
@@ -508,9 +513,8 @@ If you would rather wire the hooks by hand than install the plugin,
 4. **Look for the log** — `ls ~/.timetrack/`. No file at all means `tt init` was
    never run.
 5. **Check today's detail directly** — `tail ~/.timetrack/current-*.tsv`. Rows
-   present but an empty report means there is neither a complete lifecycle
-   interval nor a legacy pair within `TT_IDLE_GAP`. Older totals are in
-   `events-*.tsv`.
+   present but an empty report means there is no interval supported by human
+   heartbeats or agent lifecycle brackets. Older totals are in `events-*.tsv`.
 6. **Project reads `~outside`?** The agent was started outside `TT_ROOT`. Set
    `TT_ROOT=` in `~/.timetrack/config`.
 7. **Report reads `0h 00m`?** That is real: a short session produces beats only
@@ -520,9 +524,10 @@ If you would rather wire the hooks by hand than install the plugin,
 
 ## Requirements
 
-`sh`, `awk`, `sed`, `sort`, `tr`, `date`, `hostname`, `mkdir`, `mv`, `rm`,
-`cat`, `cut`, `head`, `dirname`, `readlink`. All are POSIX base utilities and
-present on Ubuntu, WSL2 and macOS. Both BSD and GNU `date` are handled.
+Capture needs `sh`, `awk`, `sed`, `sort`, `tr`, `date`, `hostname`, `mkdir`,
+`mv`, `rm`, `cat`, `cut`, `head`, `dirname`, and `readlink`. These are POSIX
+base utilities present on Ubuntu, WSL2, and macOS; both BSD and GNU `date` are
+handled. Reporting and compaction also require Python 3.8 or newer.
 
 `rsync` and `ssh` are needed only by `tt sync pull` and `tt install-remote`.
 

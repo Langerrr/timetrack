@@ -4,12 +4,7 @@ set -u
 
 TT_HOME=${TT_HOME:-$HOME/.timetrack}
 TT_ROOT=${TT_ROOT:-$HOME/workspace}
-TT_IDLE_GAP=${TT_IDLE_GAP:-1800}
-TT_READING_WPM_SET=${TT_READING_WPM+x}
-TT_MAX_READING_TIME_SET=${TT_MAX_READING_TIME+x}
 TT_MAX_ACTIVE_GAP_SET=${TT_MAX_ACTIVE_GAP+x}
-TT_READING_WPM=${TT_READING_WPM:-120}
-TT_MAX_READING_TIME=${TT_MAX_READING_TIME:-600}
 TT_MAX_ACTIVE_GAP=${TT_MAX_ACTIVE_GAP:-3600}
 
 tt_die() { printf 'tt: %s\n' "$1" >&2; exit 1; }
@@ -408,24 +403,14 @@ tt_number_setting() { # name set-marker current default validator
   printf '%s\n' "$value"
 }
 
-tt_reading_wpm() {
-  tt_number_setting TT_READING_WPM "$TT_READING_WPM_SET" \
-    "$TT_READING_WPM" 120 tt_nonnegative_number
-}
-
-tt_max_reading_time() {
-  tt_number_setting TT_MAX_READING_TIME "$TT_MAX_READING_TIME_SET" \
-    "$TT_MAX_READING_TIME" 600 tt_positive_number
-}
-
 tt_max_active_gap() {
   tt_number_setting TT_MAX_ACTIVE_GAP "$TT_MAX_ACTIVE_GAP_SET" \
     "$TT_MAX_ACTIVE_GAP" 3600 tt_nonnegative_number
 }
 
-# Config file, then environment, then default -- the same order tt_idle_gap's
-# inline callers already use, since these two knobs feed the Python reporter
-# rather than a value captured at process start with an environment-set marker.
+# Config file, then environment, then default. These two knobs feed the Python
+# reporter rather than a value captured at process start with an
+# environment-set marker.
 tt_presence_gap() {
   value=$(tt_config TT_PRESENCE_GAP) || value=''
   [ -n "${value:-}" ] || value=${TT_PRESENCE_GAP:-3600}
@@ -1118,7 +1103,7 @@ cmd_report() {
 
 cmd_init() {
   mkdir -p "$TT_HOME" || tt_die "cannot create $TT_HOME"
-  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_IDLE_GAP=1800\n# TT_MAX_ACTIVE_GAP=3600\n# TT_READING_WPM=120 (0 disables the reading estimate)\n# TT_MAX_READING_TIME=600\n# TT_SOLO_COMMANDS=goal,loop,schedule\n' > "$TT_HOME/config"
+  [ -f "$TT_HOME/config" ] || printf '# machine=\n# TT_ROOT=\n# TT_PRESENCE_GAP=3600\n# TT_CHECKIN_WINDOW=1200\n# TT_MAX_ACTIVE_GAP=3600\n# TT_SOLO_COMMANDS=goal,loop,schedule\n' > "$TT_HOME/config"
   f=$(tt_compact_file); [ -f "$f" ] || : > "$f"
   f=$(tt_current_file); [ -f "$f" ] || : > "$f"
   f=$(tt_modes_file); [ -f "$f" ] || : > "$f"
