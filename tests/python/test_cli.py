@@ -7,6 +7,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 TT = REPO / "bin" / "tt"
+TT_HOOK = REPO / "bin" / "tt-hook"
 
 
 class TestReportCLI(unittest.TestCase):
@@ -37,6 +38,19 @@ class TestReportCLI(unittest.TestCase):
             ["sh", str(TT)] + list(args),
             env=env,
             text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+
+    def run_hook(self, payload, **environment):
+        env = self.env.copy()
+        env.update({key: str(value) for key, value in environment.items()})
+        return subprocess.run(
+            ["sh", str(TT_HOOK)],
+            env=env,
+            text=True,
+            input=payload,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
@@ -139,6 +153,37 @@ class TestReportCLI(unittest.TestCase):
         self.assertEqual(self.durations(output), ['0h 02m', '0h 00m', '0h 00m',
                                                   '0h 02m', '24h 02m', '0h 00m'])
         self.assertEqual(report(259250), output)
+
+    def test_standalone_hook_rollover_honors_config_then_environment_max_gap(self):
+        def line(at, event, tool_id="-", tool_name="-"):
+            return "\t".join([
+                "i", "beat", str(at), str(at), self.machine, "claude", "paired",
+                "sportx", ".", "s1", event, "t1", tool_id, "-", "-", "-", "-",
+                tool_name, "-", "-",
+            ])
+
+        def rollover(**environment):
+            history = self.home / ("events-%s.tsv" % self.machine)
+            if history.exists():
+                history.unlink()
+            self.write_rows(
+                line(100, "UserPromptSubmit"),
+                line(85000, "Stop"),
+            )
+            payload = '{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"%s"}' % self.project_root
+            completed = self.run_hook(
+                payload, TT_NOW=86450, TT_PRESENCE_GAP=99999, **environment,
+            )
+            self.assertEqual(completed.returncode, 0)
+            self.assertTrue(history.exists())
+            self.assertIn("\tcompact\t", history.read_text())
+            continuation = [line for line in self.current.read_text().splitlines()
+                            if "\tcontinuation\t" in line]
+            return len(continuation)
+
+        (self.home / "config").write_text("TT_MAX_ACTIVE_GAP=6000\n")
+        self.assertEqual(rollover(), 1)
+        self.assertEqual(rollover(TT_MAX_ACTIVE_GAP=120), 0)
 
 
 if __name__ == "__main__":

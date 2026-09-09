@@ -4,6 +4,8 @@ set -u
 
 TT_HOME=${TT_HOME:-$HOME/.timetrack}
 TT_ROOT=${TT_ROOT:-$HOME/workspace}
+TT_MAX_ACTIVE_GAP_SET=${TT_MAX_ACTIVE_GAP+x}
+TT_MAX_ACTIVE_GAP=${TT_MAX_ACTIVE_GAP:-3600}
 
 tt_self() {
   s=$0

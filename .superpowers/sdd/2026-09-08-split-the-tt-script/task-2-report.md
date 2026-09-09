@@ -34,3 +34,25 @@ wc -l bin/tt bin/tt-hook lib/tt-common.sh
 
 The two diffs produced no output: hook-only bodies are byte-identical. Line
 counts are `511`, `204`, and `670`, respectively. `git diff --check` passed.
+
+## Bootstrap follow-up
+
+Review found that the hook loader omitted the `TT_MAX_ACTIVE_GAP_SET` marker
+and `TT_MAX_ACTIVE_GAP` default required by `tt_max_active_gap` under `set -u`.
+The hook's unconditional success wrapper had hidden the resulting rollover
+failure. The loader now copies those two lines from `bin/tt` before sourcing
+the shared library.
+
+`TestReportCLI.test_standalone_hook_rollover_honors_config_then_environment_max_gap`
+first failed before the fix with an empty compact history despite exit zero.
+Afterward it passed, asserting the compact marker and that a config value of
+`6000` retains a continuation while environment `TT_MAX_ACTIVE_GAP=120`
+overrides it and does not retain one.
+
+```sh
+PYTHONPATH=lib python3 -m unittest \
+  tests.python.test_cli.TestReportCLI.test_standalone_hook_rollover_honors_config_then_environment_max_gap
+# Ran 1 test ... OK
+PYTHONPATH=lib python3 -m unittest discover -s tests/python
+# Ran 135 tests ... OK
+```
