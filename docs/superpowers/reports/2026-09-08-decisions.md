@@ -111,3 +111,11 @@ Ruling: accept unstamped beats in shell rollover validation while retaining lega
 Ruling: uphold I1 and retain sufficient scoped transition boundaries for future session projection; do not drop first-session support or alter machine grouping to hide the discrepancy. Cost if wrong: additional carry state; both scope directions and repeated incremental rollover must preserve all report columns.
 
 Ruling: allow retaining session-less mode-transition history as the smallest exact I1 repair, excluding raw hook history and preventing replay into already-carried sessions. Avoid a new overlapping-path frontier architecture solely to optimize human-sized transition history. Cost if wrong: retained transition state grows with mode commands; document this explicit storage tradeoff and verify repeated carry.
+
+## Codex runtime review
+
+Ruling: SessionEnd closes open work but does not extend completed work or seed a continuation. Cost if wrong: a harness using shutdown itself as a continuation signal would lose that inferred interval; actual Codex shutdown and explicit Stop continuation regressions distinguish the cases.
+
+Ruling: use Codex SubagentStart/SubagentStop and observed child IDs for asynchronous worker time, keeping synchronous Task/Agent inference for other harnesses. Cost if wrong: Codex logs missing explicit lifecycle events cannot recover a child's full lifetime from its short spawn call. Actual parent/child capture and rollover tests verify the supplied telemetry.
+
+Ruling: report native Codex goal auto-solo as unsupported by the current hook contract, rather than infer intent from ordinary prompt text or permission mode. Explicit tt solo is a workaround, not fulfillment of auto-detection. Cost if wrong: a future supported goal-start field could enable automatic mode selection; the finding is version-scoped to the tested Codex 0.153.4 contract.

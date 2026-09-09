@@ -2,6 +2,8 @@
 
 > **Status: completed.** Tasks 1–10 and accounting integration are implemented and reviewed. See the [completion record](../reports/2026-09-08-completion.md) for commits, verification, decisions, and the subsequent authorized cleanup. The steps and code snippets below are the historical implementation recipe; unchecked recipe boxes do not indicate remaining work.
 
+> **Codex compatibility review:** lifecycle accounting is verified after follow-up repairs. Native goal auto-solo remains a documented integration gap; see the [runtime review](../reports/2026-09-08-codex-hooks-review.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the single blended time figure with two independent measures — effort (the user's own engagement) and machine time (agent hours, split into agent and tool) — reconstructed from separate classes of evidence.

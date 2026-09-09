@@ -108,10 +108,10 @@ Either way the hooks run from the next session. There is no trust step.
 
 ### Codex
 
-**Codex silently skips a plugin's hooks until you grant hook trust in its
-interactive TUI.** There is no error, no warning and no log line — `tt` simply
-appears dead, and an empty log is the only symptom. This is the most likely
-reason an install looks like it failed.
+**Codex skips plugin hooks until you trust their current definitions.** Use
+`/hooks` in an interactive session to review them. Current Codex versions warn
+when hooks need review; an empty time log can also indicate that hooks are
+untrusted or disabled.
 
 So install, and then start one **interactive** Codex session and accept the
 trust decision it asks for:
@@ -126,15 +126,22 @@ Codex requires the marketplace in the plugin name. `codex plugin add timetrack`
 is refused with `plugin requires --marketplace unless passed as
 <plugin>@<marketplace>`.
 
-Codex calls this *persisted* hook trust in its own `codex exec --help`, so the
-expectation is that you grant it once rather than every session — though the
-silent-skip behaviour is what was observed here, not the granting. That same
-help text carries a `--dangerously-bypass-hook-trust` flag for vetted automation;
-it is not the normal path and should not be how you install this.
+Trust is persisted against each hook definition's hash. Installing or enabling
+a plugin does not grant it automatically. See the
+[Codex hook documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)
+for the current trust workflow.
 
 Updating this plugin changes the hook definition and its trust hash. After
 installing a new version, review and trust the current hooks again through
 `/hooks` in an interactive Codex session.
+
+Codex 0.153.4 native goals do not expose a goal-start marker in their hook
+payloads. The automatic mode classifier works when a hook receives a literal
+`/goal`, `/loop`, or `/schedule` prompt; it cannot detect native goal activation
+from an ordinary objective prompt. Run `tt solo` explicitly before leaving a
+native goal unattended. This is a workaround for an integration gap; the
+[Codex review](docs/superpowers/reports/2026-09-08-codex-hooks-review.md) records
+the runtime evidence and its limits.
 
 ### Put `tt` on your PATH
 
@@ -450,7 +457,12 @@ does not retroactively claim it. These internal meanings do not change captured
 beat columns.
 The first `compact` row records the current local-day marker for the fast path.
 
-Observed child tools are subtracted only from their owning worker. When a
+Codex worker lifetimes come from `SubagentStart`/`SubagentStop`, because its
+spawn tool returns before the child finishes. Child tool hooks carry the same
+parent session and child id, so their time is subtracted from that exact worker.
+Session shutdown closes any open turn without billing idle time after Stop.
+
+Other observed child tools are subtracted only from their owning worker. When a
 child has exactly one eligible active spawning bracket in its session, that
 bracket owns the child. Ambiguous or missing associations leave the child's
 tools in TOOL without subtracting them from an arbitrary spawned worker.

@@ -69,17 +69,28 @@ such id and applies to every matching session below the path. Use
     sh "$TT_CMD" report --by day
     sh "$TT_CMD" report --detail   # break projects out by sub-directory
 
-Read the table back in prose, leading with the number they asked for. `ESTIMATED`
-is the portion of `PAIRED` inferred as reading time after a solo response; it is
-a disclosed subset and must not be added to `TOTAL` again.
+Read the table back in prose, leading with the number they asked for. `EFFORT`
+is the disjoint sum of `PAIRED`, `CHECKIN`, and `MANUAL`. `AGENT` and `TOOL`
+measure machine work separately; never add them to personal effort. There is
+no reading-time estimate. Automatic `/goal`, `/loop`, and `/schedule` triggers
+set solo mode; a later human check-in does not switch back to paired.
+This automatic rule requires the literal command in the hook prompt. Native
+Codex goals do not expose that signal in Codex 0.153.4; use explicit `tt solo`
+when the user says to let a native goal run unattended, and do not promise that
+native goal activation automatically changes mode.
 
 ## Correcting a mistake
 
-Today's detailed rows are in `~/.timetrack/current-<machine>.tsv`; completed-day
-totals are in `~/.timetrack/events-<machine>.tsv`. A current `span` may be edited
-or deleted. After rollover, correct the seconds in the matching compact `total`
-row instead. Beat detail is temporary and is discarded automatically after its
-local day closes. Column 11 holds the user's note on a current span and the hook
+Resolve the data directory with `sh "$TT_CMD" debug-home`; it defaults to
+`~/.timetrack`. Current rows are in `current-<machine>.tsv`; completed history
+is in `events-<machine>.tsv`. A current manual `span` may be edited or deleted.
+After rollover, effort is coalesced into `coverage` rows, while `total` rows
+hold machine durations or legacy totals. Do not edit a total's duration to
+correct new manual effort. Coverage may combine overlapping claims and no
+longer identify an individual entry; inspect the available evidence and explain
+when a specific historical entry cannot be recovered safely. Do not treat
+internal `state` rows as manual entries. Raw beat detail is temporary; unresolved
+state and session-less mode transitions survive rollover. Column 11 holds the user's note on a current span and the hook
 event name (`SessionStart`, `PreToolUse`, …) on a beat, so never read it back as
 something the user wrote. `assistant_words` is a count; raw assistant output is
 never stored.
@@ -87,8 +98,8 @@ never stored.
 ## Rules
 
 - Manually log only a duration the user stated or confirmed. Do not invent a
-  manual entry from conversation length; the reporter owns its explicit,
-  bounded solo-reading estimate.
+  manual entry from conversation length; the reporter reconstructs observed
+  presence and bounded check-in episodes.
 - Time coming up in conversation is conversation. Log when asked to log.
 - Always show the written row.
 - One `tt add` per distinct block of work. Do not batch several into one row.

@@ -38,8 +38,11 @@ and carries no presence claim.
 
 A **worker** is either a main session or one subagent instance. Five subagents
 running ten minutes alongside their parent are five workers plus their parent.
-The tool call that spawns a subagent opens that new worker; it runs alongside
-its parent rather than inside it.
+The child runs alongside its parent rather than inside it. Claude-style
+synchronous Task/Agent brackets provide the worker's lifetime. Codex spawn
+calls return before the child finishes, so Codex worker time uses its explicit
+`SubagentStart`/`SubagentStop` bracket. Those events and the child's tool hooks
+share the parent session and identify the child with `agent_id`.
 
 Machine time is reported in two categories, each summed over every worker:
 
@@ -55,6 +58,9 @@ goes negative, and tool time may exceed the worker's own elapsed span.
 Hooks cannot observe API time directly. Agent time is elapsed-minus-tools, so it
 also absorbs harness overhead and queueing, and it runs somewhat above the API
 figure a harness reports for itself.
+
+`SessionEnd` closes an open turn but does not extend a completed turn across
+the idle gap before shutdown, or seed a later hook continuation.
 
 ## Evidence
 
@@ -158,6 +164,15 @@ over-reporting it.
 
 Check-ins during an automatic solo run do not end it. They credit effort through
 their own heartbeat windows, which is what they are.
+
+**Codex review finding (0.153.4):** the literal slash-prompt classifier is
+implemented, but native goal activation is not observable through the current
+hook payload. Native goal creation sends the objective as an ordinary prompt;
+automatic continuations emit Stop without another UserPromptSubmit. They do
+not create extra human heartbeats, but the planned automatic solo transition
+cannot be inferred from those events. Explicit `tt solo` remains available;
+it is a workaround, not fulfillment of native goal auto-detection. A goal-start
+signal from the client is needed to close this integration gap.
 
 ## Report
 
@@ -266,7 +281,8 @@ solo episode preserves its initial attribution. A recent Stop continuation
 seed can expire after `TT_MAX_ACTIVE_GAP` and is cleared by SessionStart reset.
 No source's reconstruction frontier suppresses another machine's observations.
 
-Tool identity includes the observed owning `agent_id`. Associate an observed
-child with the sole eligible active spawning bracket in its session. Missing
+Tool identity includes the observed owning `agent_id`. Codex explicit child
+lifecycles use that identity directly. For synchronous spawning brackets,
+associate an observed child with the sole eligible active bracket in its session. Missing
 or ambiguous association must not subtract its tools from an arbitrary worker.
 A spawning bracket remains measurable even without child tool telemetry.

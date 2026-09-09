@@ -52,7 +52,7 @@ def machine_spans(rows, max_active):
     def close_tool(key, at, stable=True):
         opened = open_tools.pop(key)
         tools.append((tool_worker(opened), opened, at, stable, False))
-        if opened.tool_name in SUBAGENT_TOOLS:
+        if opened.tool_name in SUBAGENT_TOOLS and opened.harness != 'codex':
             child = opened.agent_type
             if child in ('', '-'):
                 child = '@%s:%s' % (opened.tool_use_id, opened.start)
@@ -77,6 +77,19 @@ def machine_spans(rows, max_active):
             elif row.event == 'continuation':
                 last_close[owner] = row
             continue
+        if row.harness == 'codex' and row.agent_id not in ('', '-'):
+            # Codex spawn calls return before the child finishes. Its explicit
+            # lifecycle shares the parent session and carries the child id,
+            # as do the child's own tool hooks.
+            if row.event == 'SubagentStart':
+                if owner in open_turns:
+                    close_turn(owner, row.start)
+                open_turns[owner] = row
+                continue
+            if row.event == 'SubagentStop':
+                if owner in open_turns:
+                    close_turn(owner, row.start)
+                continue
         if row.event == 'SessionStart':
             if row.harness == 'codex' and row.session_source == 'compact':
                 continue
@@ -93,8 +106,8 @@ def machine_spans(rows, max_active):
                     del last_close[turn_key]
             continue
         if row.event == TOOL_OPEN:
-            associated = owner[1] == '-'
-            if owner[1] != '-':
+            associated = owner[1] == '-' or row.harness == 'codex'
+            if owner[1] != '-' and row.harness != 'codex':
                 # An observed child belongs to the sole eligible active spawn.
                 # Multiple candidates are ambiguous: leave them unassociated.
                 candidates = [k for k, opened in open_tools.items()
@@ -119,11 +132,16 @@ def machine_spans(rows, max_active):
         elif row.event in TURN_CLOSE:
             if owner in open_turns:
                 close_turn(owner, row.start)
-            else:
+            elif row.event != 'SessionEnd':
                 seed = last_close.get(owner)
                 if seed is not None and row.start - seed.start <= max_active:
                     turns.append((owner, row._replace(start=seed.start), row.start, True))
-            last_close[owner] = row
+            if row.event == 'SessionEnd':
+                # Shutdown may follow a completed turn after a long idle gap.
+                # It closes work still open, but is not a hook continuation.
+                last_close.pop(owner, None)
+            else:
+                last_close[owner] = row
 
     pending = [state(row, 'tool') for row in open_tools.values()]
     saved_open_tools = dict(open_tools)

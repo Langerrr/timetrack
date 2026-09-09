@@ -4,6 +4,12 @@ Both plans and the authorized cleanup are implemented on `effort-machine-time`.
 Runtime acceptance commit: `473ddc6`. Base: `61e4162` (`main`).
 Implementation and review are complete; branch integration remains the user's choice.
 
+The subsequent [Codex runtime review](2026-09-08-codex-hooks-review.md) fixed
+shutdown and asynchronous-child accounting, updated stale skill instructions,
+and verified 156 Python / 214 sh / 214 dash checks. Its compatibility verdict
+is partial: native Codex goal activation supplies no goal-start hook signal,
+so automatic solo mode for native goals remains an explicit integration gap.
+
 ## Result
 
 Personal effort is reported as PAIRED, CHECKIN, and MANUAL with their disjoint
