@@ -33,6 +33,19 @@ class TestParseLine(unittest.TestCase):
         self.assertEqual(r.prompt_class, "-")
         self.assertEqual(r.fingerprint, "-")
 
+    def test_extra_columns_are_ignored_without_shifting_known_fields(self):
+        fields = ['i', 'beat', '1', '1', 'm1', 'claude', '-', 'sportx', '.',
+                  's1', 'UserPromptSubmit', '-', '-', '-', '-', '-', '-', '-',
+                  'human', 'fingerprint']
+        expected = parse_line(row(*fields))
+        self.assertEqual(parse_line(row(*(fields + ['future', 'extension']))), expected)
+
+    def test_empty_session_uses_the_same_fallback_as_a_dash(self):
+        fields = ['i', 'beat', '1', '1', 'm1', 'claude', '-', 'sportx', 'api',
+                  '', 'Stop']
+        self.assertEqual(parse_line(row(*fields)).stream,
+                         ('m1', 'claude', 'sportx/api'))
+
     def test_row_with_unparsable_timestamp_is_dropped(self):
         line = row("bad", "beat", "not-a-number", "0", "m1", "claude",
                    "paired", "sportx", ".", "s", "Stop")

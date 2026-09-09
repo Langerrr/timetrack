@@ -180,10 +180,9 @@ cmd_hook() {
   attrib=$(tt_attribute "$cwd")
   proj=$(printf '%s' "$attrib" | cut -f1)
   sub=$(printf '%s' "$attrib" | cut -f2)
-  mode=$(tt_mode "$cwd" "$sid")
 
   row=$(printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-    "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
+    "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "-" \
     "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
     "$(tt_clean "$turn")" "$(tt_clean "$tool")" "$(tt_clean "$agent")" \
     "$(tt_clean "$agent_type")" "$words" "$(tt_clean "$session_source")" \
@@ -193,8 +192,7 @@ cmd_hook() {
   # A replayed /loop or /schedule wake-up sets solo automatically; a genuine
   # human prompt does not, and neither does a replay already covered by an
   # earlier trigger (classified machine, not trigger again). Both the durable
-  # row and the capture-time cache are updated, so the transition is visible
-  # in a report immediately and to this session's very next beat.
+  # row and CLI mode cache are updated, so reports and mode inspection agree.
   if [ "$prompt_class" = trigger ]; then
     tt_cache_mode solo "$cwd" "$sid" >/dev/null 2>&1 || :
     tt_write_mode_row solo "$cwd" "$sid" "$now" auto >/dev/null 2>&1 || :

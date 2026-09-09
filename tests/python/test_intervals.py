@@ -95,3 +95,13 @@ class TestSubtract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDayEdges(unittest.TestCase):
+    def test_exact_start_and_end_do_not_create_an_extra_day(self):
+        self.assertEqual(split_days([(100, 200)], [0, 100, 200, 300]),
+                         [(100, (100, 200))])
+
+    def test_duplicate_boundaries_neither_drop_nor_repeat_time(self):
+        self.assertEqual(split_days([(50, 250)], [0, 100, 100, 200, 200, 300]),
+                         [(0, (50, 100)), (100, (100, 200)), (200, (200, 250))])

@@ -7,7 +7,7 @@ heartbeat arrives; canonical project union absorbs already-known seconds.
 
 from typing import List
 
-from .effort import _is_heartbeat, _presence_key
+from .effort import presence_groups
 from .events import Row, STATE_HEARTBEAT
 from .machine import MachineSpans
 from .modes import ModeTimeline, SOLO
@@ -36,19 +36,17 @@ def write_lines(past, cutoff, checkin_window, max_active, machine_result):
     timeline = ModeTimeline.from_rows(past)
     last_by_key = {}
     anchors = {}
-    for row in sorted(past, key=lambda r: r.start):
-        if row.kind == 'span' or not _is_heartbeat(row):
-            continue
-        key = _presence_key(row)
-        previous = last_by_key.get(key)
-        mode = timeline.at(row.stream, row.start, row.project, row.subpath)
-        if mode == SOLO:
-            if (previous is None or key not in anchors or
-                    row.start - previous.start > checkin_window):
-                anchors[key] = episode_location(row)
-        else:
-            anchors.pop(key, None)
-        last_by_key[key] = row
+    for key, beats in presence_groups(past).items():
+        for row in sorted(beats, key=lambda r: r.start):
+            previous = last_by_key.get(key)
+            mode = timeline.at(row.stream, row.start, row.project, row.subpath)
+            if mode == SOLO:
+                if (previous is None or key not in anchors or
+                        row.start - previous.start > checkin_window):
+                    anchors[key] = episode_location(row)
+            else:
+                anchors.pop(key, None)
+            last_by_key[key] = row
 
     from .events import parse_line
     for key, last in last_by_key.items():

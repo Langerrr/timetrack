@@ -389,11 +389,14 @@ iso_start  kind  start  end  machine  harness  mode  project  subpath  session  
 | 4 | `end` | Epoch seconds; equal to `start` on a beat |
 | 5 | `machine` | `machine=` from config, else the short hostname |
 | 6 | `harness` | `claude`, `codex`, or `-` on a mode/span |
-| 7 | `mode` | `paired`, `solo` or `manual` |
+| 7 | `mode` | `paired` or `solo` on transitions, `manual` on spans, `-` on beats |
 | 8 | `project` | Top-level directory under `TT_ROOT` |
 | 9 | `subpath` | Remainder of the event's working directory, or `.` |
 | 10 | `session` | Harness session id, or `-` for an all-session scope |
 | 11 | `note` | On a `span`, your free-text note (`-` if none). On a `beat`, the hook event name. `mode` uses `-`. |
+
+Beat column 7 stays `-`; reports resolve modes from explicit and automatic
+transition rows. Older beats with a mode stamp still parse normally.
 
 New beat rows append lifecycle and classification fields:
 

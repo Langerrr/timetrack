@@ -25,6 +25,14 @@ class TestModeTimeline(unittest.TestCase):
         row = row or self.row
         return timeline.at(row.stream, when, row.project, row.subpath)
 
+    def test_malformed_mode_keeps_the_effective_mode_and_next_change(self):
+        t = ModeTimeline.from_rows([
+            mode_row(100, 'solo', 'sportx', '.', '-'),
+            mode_row(200, 'invalid', 'sportx', '.', '-'),
+            mode_row(300, 'paired', 'sportx', '.', '-')])
+        self.assertEqual(self.at(t, 200), 'solo')
+        self.assertEqual(t.next_change(self.row.stream, 100, 'sportx', '.'), 300)
+
     def test_default_is_paired(self):
         t = ModeTimeline.from_rows([])
         self.assertEqual(self.at(t, 100), "paired")

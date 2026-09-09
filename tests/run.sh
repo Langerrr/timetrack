@@ -139,7 +139,7 @@ assert_eq "beat" "$(cut -f2 < "$LOG")" 'kind is beat'
 assert_eq "1900000000" "$(cut -f3 < "$LOG")" 'start is the current epoch'
 assert_eq "1900000000" "$(cut -f4 < "$LOG")" 'end equals start for a beat'
 assert_eq "claude" "$(cut -f6 < "$LOG")" 'harness detected from CLAUDE_PLUGIN_ROOT'
-assert_eq "paired" "$(cut -f7 < "$LOG")" 'mode defaults to paired'
+assert_eq "-" "$(cut -f7 < "$LOG")" 'beats leave the unused mode column empty'
 assert_eq "sportx" "$(cut -f8 < "$LOG")" 'project from cwd'
 assert_eq "saas-backend" "$(cut -f9 < "$LOG")" 'subpath from cwd'
 assert_eq "abc123" "$(cut -f10 < "$LOG")" 'session id captured'
@@ -151,12 +151,9 @@ assert_eq "codex" "$(cut -f6 < "$LOG")" 'harness detected from PLUGIN_ROOT'
 clear_logs
 sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null
 printf '%s' "$HOOKJSON" | TT_NOW=1900000002 sh "$TT_HOOK"
-# A carried heartbeat state row for the earlier `tt solo` mode transition
-# can legitimately sit alongside the hook's own beat now that mode is
-# carried across a compaction boundary -- pick the beat row specifically,
-# not just any row in the file.
-assert_eq "solo" "$(awk -F '\t' '$2 == "beat" { v = $7 } END { print v }' "$LOG")" \
-  'mode reflects the session directory'
+# The mode cache remains available to CLI inspection after hook capture.
+assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend" abc123)" \
+  'the explicit mode remains available through the CLI cache'
 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" >/dev/null
 
 clear_logs
@@ -223,7 +220,7 @@ assert_eq "abc123" "$(cut -f10 < "$LOG")" 'a mode event can target one session'
 clear_logs
 PROMPTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"UserPromptSubmit","turn_id":"turn-8"}'
 printf '%s' "$PROMPTJSON" | TT_NOW=1900000008 PLUGIN_ROOT=/p sh "$TT_HOOK"
-assert_eq "solo" "$(cut -f7 < "$LOG")" 'a prompt does not override an explicit solo signal'
+assert_eq "-" "$(cut -f7 < "$LOG")" 'a prompt leaves mode resolution to explicit transitions'
 assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend" abc123)" 'solo remains sticky until an explicit paired signal'
 TT_NOW=1900000009 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" --session abc123 >/dev/null
 
@@ -707,6 +704,8 @@ assert_status 1 'a human prompt records a fingerprint' -- \
 
 hook_json s1 PreToolUse "" Bash | sh "$TT_HOOK"
 assert_eq "Bash" "$(last_beat | cut -f18)" 'tool_name is recorded'
+assert_eq "-" "$(last_beat | cut -f19)" 'tool events have no prompt classification'
+assert_eq "-" "$(last_beat | cut -f20)" 'tool events have no prompt fingerprint'
 
 hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT_HOOK"
 assert_eq "trigger" "$(last_beat | cut -f19)" 'a solo-trigger command classifies as trigger'

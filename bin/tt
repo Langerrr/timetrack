@@ -36,13 +36,13 @@ unset tt_common_lib
 
 tt_set_mode() { # mode path session [quiet]
   m=$1
-  p=$(tt_abs "${2:-$PWD}")
+  p=${2:-$PWD}
   s=${3:--}
-  tt_cache_mode "$m" "$p" "$s" || tt_die "cannot record mode: $m $p (session $s); check for a tab or newline in the path or session, or that $(tt_modes_file) is writable"
+  tt_cache_mode "$m" "$p" "$s" || tt_die "$TT_MODE_ERROR"
+  p=$cm_path
 
-  # The explicit transition is the source of truth for reports. Unlike a mode
-  # stamped on the next hook beat, it splits activity at the instant the user
-  # says they stepped away or returned.
+  # The explicit transition splits activity at the instant the user says
+  # they stepped away or returned. Reports resolve modes from these rows.
   now=$(tt_now)
   tt_write_mode_row "$m" "$p" "$s" "$now" hand || tt_die "cannot record mode transition in $(tt_log_file)"
 

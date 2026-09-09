@@ -15,7 +15,7 @@ every other module only ever sees one `total` shape.
 from typing import Iterable, List, NamedTuple, Optional, Tuple
 
 COLUMNS = 20
-MIN_COLUMNS = 11
+MIN_COLUMNS = 11  # The event/note column is the last mandatory field.
 OLD_TOTAL_COLUMNS = 12
 
 SUBAGENT_TOOLS = frozenset(["Task", "Agent"])

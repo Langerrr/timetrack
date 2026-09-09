@@ -10,7 +10,7 @@ from typing import Dict, Iterable, List, NamedTuple, Tuple
 
 from .events import Row, STATE_HEARTBEAT
 from .intervals import Span
-from .modes import ModeTimeline, SOLO
+from .modes import ModeTimeline, SOLO, _applies
 
 Entry = Tuple[str, str, Span]
 
@@ -23,7 +23,7 @@ class EffortSpans(NamedTuple):
 
 def _is_heartbeat(row):
     # type: (Row) -> bool
-    if row.kind in ("mode", "span"):
+    if row.kind == "mode":
         return True
     if row.kind == "state":
         return row.event == STATE_HEARTBEAT
@@ -44,6 +44,52 @@ def _presence_key(row):
     return (row.machine, row.harness, row.project + "/" + row.subpath)
 
 
+def _scoped_heartbeat(row):
+    return (row.session in ('-', '') and row.harness == '-' and
+            (row.kind == 'mode' or
+             (row.kind == 'state' and row.event == STATE_HEARTBEAT)))
+
+
+def presence_groups(rows):
+    """Share terminal presence with covered sessions, using the mode scope.
+
+    Keep the terminal's own stream too: two terminal commands are evidence
+    even without a harness session. Project coverage unions their overlap.
+    Project each shared heartbeat onto the session's observed location so
+    subsequent nested mode changes resolve against the same scope as prompts.
+    """
+    groups = {}
+    scopes = []
+    for row in rows:
+        if not _is_heartbeat(row):
+            continue
+        groups.setdefault(_presence_key(row), []).append(row)
+        if _scoped_heartbeat(row):
+            scopes.append(row)
+    for key, beats in groups.items():
+        observed = sorted((r for r in beats if not _scoped_heartbeat(r)),
+                          key=lambda r: r.start)
+        if not observed:
+            continue
+        for scope in scopes:
+            # The latest known location applies until a session next moves.
+            target = observed[0]
+            for row in observed:
+                if row.start > scope.start:
+                    break
+                target = row
+            if not _applies(scope, target.stream, target.project, target.subpath):
+                continue
+            project, subpath = episode_location(scope)
+            beats.append(scope._replace(
+                kind='state', event=STATE_HEARTBEAT, harness=target.harness,
+                session=target.session, project=target.project,
+                subpath=target.subpath, session_source='episode',
+                agent_type=project, tool_name=subpath))
+        beats.sort(key=lambda r: r.start)
+    return groups
+
+
 def episode_location(row):
     if row.kind == 'state' and row.session_source == 'episode':
         return row.agent_type, row.tool_name
@@ -56,13 +102,10 @@ def effort_spans(rows, timeline, presence_gap, checkin_window):
     checkin = []  # type: List[Entry]
     manual = []  # type: List[Entry]
 
-    by_presence = {}  # type: Dict[Tuple, List[Row]]
-    for row in rows:
-        if row.kind == "span":
-            manual.append((row.project, row.subpath, (row.start, row.end)))
-            continue
-        if _is_heartbeat(row):
-            by_presence.setdefault(_presence_key(row), []).append(row)
+    rows = list(rows)
+    manual = [(row.project, row.subpath, (row.start, row.end))
+              for row in rows if row.kind == "span"]
+    by_presence = presence_groups(rows)
 
     half_gap = presence_gap // 2
     half_window = checkin_window // 2

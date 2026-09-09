@@ -82,7 +82,7 @@ tt_attribute() { # abs-path -> project<TAB>subpath
 # Current modes are a capture-time cache. Each row is
 # mode<TAB>abspath<TAB>session, where session '-' means every session below the
 # path. Rows are ordered by their last explicit transition, so the latest
-# matching ancestor wins. The durable transition itself is also appended to the
+# matching ancestor wins. The durable transition is appended to the event log.
 
 tt_modes_file() { printf '%s/modes\n' "$TT_HOME"; }
 
@@ -164,37 +164,35 @@ tt_write_mode_row() { # mode path session epoch origin
   tt_append_row "$wmr_row" "$wmr_epoch"
 }
 
-# Rewrites the capture-time mode cache read by tt_mode, so a hook can stamp
-# its very next beat with a transition instead of waiting for a report to
-# replay the durable mode row tt_write_mode_row appends alongside it. Shared
-# by an explicit `tt solo`/`tt paired` and an automatic trigger in cmd_hook.
+# Rewrites the mode cache used by `tt sessions` and `tt debug-mode`. Shared
+# by explicit mode commands and automatic triggers; reports use durable rows.
 #
 # Failure is signalled by a plain return, never tt_die: cmd_hook calls this
 # directly (not inside a subshell of its own), and an automatic trigger must
 # degrade quietly rather than abort the rest of the hook -- ordinary lock
 # contention between concurrent hooks is expected, not an error worth dying
-# over. tt_set_mode, called only for an explicit `tt solo`/`tt paired`, is
+# over. Explicit mode commands surface TT_MODE_ERROR to the user.
 
 tt_cache_mode() { # mode path session
   cm_mode=$1
   cm_path=$(tt_abs "$2")
   cm_session=$3
-  # The modes file separates its fields with a TAB and its rows with a
-  # newline, so a path holding either cannot be stored and read back as itself.
-  # Refusing it costs two comparisons; an escaping scheme would cost a format.
+  # TSV cannot represent tabs or newlines in either key field.
   tab=$(printf '\t')
   nl=$(printf '\nx'); nl=${nl%x}
+  TT_MODE_ERROR="cannot record mode: path contains a tab or newline"
   case "$cm_path" in
-    *"$tab"*) return 1 ;;
-    *"$nl"*)  return 1 ;;
+    *"$tab"*|*"$nl"*) return 1 ;;
   esac
+  TT_MODE_ERROR="cannot record mode: session contains a tab or newline, or is empty"
   case "$cm_session" in
-    *"$tab"*) return 1 ;;
-    *"$nl"*)  return 1 ;;
-    '')        return 1 ;;
+    *"$tab"*|*"$nl"*|'') return 1 ;;
   esac
+  TT_MODE_ERROR="cannot create $TT_HOME"
   mkdir -p "$TT_HOME" || return 1
+  TT_MODE_ERROR="timed out waiting for $(tt_lock_dir); if no other tt is running, remove it"
   tt_lock || return 1
+  TT_MODE_ERROR="cannot write $(tt_modes_file); check that it is writable"
   trap 'tt_unlock' EXIT HUP INT TERM
   f=$(tt_modes_file)
   if [ -f "$f" ]; then src=$f; else src=/dev/null; fi
@@ -220,6 +218,7 @@ tt_cache_mode() { # mode path session
   fi
   tt_unlock
   trap - EXIT HUP INT TERM
+  TT_MODE_ERROR=
   return 0
 }
 
@@ -402,7 +401,7 @@ tt_validate_rows() { # file role
     }
     function valid_beat() {
       return NF >= 11 && uint($3) && uint($4) && $4 >= $3 &&
-             ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
+             ($7 == "-" || $7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
     }
     function valid_span() {
       return NF >= 11 && uint($3) && uint($4) && $4 >= $3 &&

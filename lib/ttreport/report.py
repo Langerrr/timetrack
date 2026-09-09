@@ -42,7 +42,7 @@ class Options(NamedTuple):
 
 def format_duration(seconds):
     # type: (int) -> str
-    seconds = max(0, int(seconds))
+    seconds = int(seconds)
     return "%dh %02dm" % (seconds // 3600, (seconds % 3600) // 60)
 
 
