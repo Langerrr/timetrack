@@ -1,31 +1,31 @@
 {
   "hooks": {
     "SessionStart": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ],
     "UserPromptSubmit": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ],
     "Interrupt": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'", "timeout": 3 } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'", "timeout": 3 } ] }
     ],
     "SubagentStart": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ],
     "SubagentStop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt\" hook'" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "sh -c 'exec \"$PLUGIN_ROOT/bin/tt-hook\"'" } ] }
     ]
   }
 }

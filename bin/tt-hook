@@ -1,0 +1,204 @@
+#!/bin/sh
+# tt-hook — harness entry point for per-project time tracking.
+set -u
+
+TT_HOME=${TT_HOME:-$HOME/.timetrack}
+TT_ROOT=${TT_ROOT:-$HOME/workspace}
+
+tt_self() {
+  s=$0
+  while [ -L "$s" ]; do
+    d=$(cd "$(dirname "$s")" && pwd)
+    l=$(readlink "$s")
+    case "$l" in /*) s=$l ;; *) s="$d/$l" ;; esac
+  done
+  (cd "$(dirname "$s")" && pwd)
+}
+
+# Shared helpers live beside the bundled Python reporter. A TT_LIB override may
+# deliberately contain only an alternate Python reporter, so use its shell helper
+# only when it supplies one and otherwise retain the bundled implementation.
+tt_common_lib=${TT_LIB:-$(tt_self)/../lib}
+[ -f "$tt_common_lib/tt-common.sh" ] || tt_common_lib=$(tt_self)/../lib
+. "$tt_common_lib/tt-common.sh"
+unset tt_common_lib
+
+# Extracts a top-level JSON string field. A hook payload embeds the whole tool
+# input, which can carry its own "cwd" key, and paths can hold commas, colons,
+# braces and escaped quotes -- so this scans the text rather than matching it,
+# tracking string state and nesting depth, and only accepts a key at depth 1 of
+# the outermost object. Escapes are left as written; these fields are paths and
+# ids, and nothing downstream decodes them.
+tt_json_str() { # field json
+  printf '%s' "$2" | awk -v key="$1" '
+    { buf = buf $0 "\n" }
+    END {
+      n = length(buf)
+      depth = 0
+      i = 1
+      while (i <= n) {
+        c = substr(buf, i, 1)
+        if (c == "{" || c == "[") { depth++; stack[depth] = c; i++; continue }
+        if (c == "}" || c == "]") { if (depth > 0) depth--; i++; continue }
+        if (c != "\"") { i++; continue }
+
+        # Walk the string token without copying it; j lands on its closing quote.
+        s = i + 1
+        j = s
+        while (j <= n) {
+          c = substr(buf, j, 1)
+          if (c == "\\") { j += 2; continue }
+          if (c == "\"") break
+          j++
+        }
+        i = j + 1
+
+        # A string is a key only when a colon follows it.
+        k = i
+        while (k <= n && index(" \t\n\r", substr(buf, k, 1)) > 0) k++
+        if (substr(buf, k, 1) != ":") continue
+        i = k + 1
+        if (depth != 1 || stack[1] != "{" || substr(buf, s, j - s) != key) continue
+
+        while (i <= n && index(" \t\n\r", substr(buf, i, 1)) > 0) i++
+        if (substr(buf, i, 1) != "\"") continue
+        s = i + 1
+        j = s
+        while (j <= n) {
+          c = substr(buf, j, 1)
+          if (c == "\\") { j += 2; continue }
+          if (c == "\"") break
+          j++
+        }
+        print substr(buf, s, j - s)
+        exit
+      }
+    }'
+}
+
+tt_word_count() { # JSON string contents, still escaped
+  printf '%s' "$1" | awk '
+    { text = text (NR > 1 ? " " : "") $0 }
+    END {
+      gsub(/\\[nrt]/, " ", text)
+      gsub(/^[[:space:]]+/, "", text)
+      gsub(/[[:space:]]+$/, "", text)
+      if (text == "") print 0
+      else print split(text, word, /[[:space:]]+/)
+    }'
+}
+
+# A fingerprint identifies a repeated prompt without storing what it said.
+# cksum is in POSIX and present on both target platforms; the value only has
+# to be stable within one machine's log.
+tt_fingerprint() { # string
+  printf '%s' "$1" | cksum | awk '{ printf "%08x\n", $1 }'
+}
+
+tt_solo_commands() {
+  value=$(tt_config TT_SOLO_COMMANDS) || value=''
+  [ -n "${value:-}" ] || value=${TT_SOLO_COMMANDS:-goal,loop,schedule}
+  printf '%s' "$value"
+}
+
+tt_trigger_file() { # session
+  printf '%s/trigger/%s' "$TT_HOME" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+}
+
+tt_classify_prompt() { # prompt session
+  prompt=$1; sid=$2
+  if [ -z "$prompt" ]; then printf -- '-\t-\n'; return 0; fi
+  fp=$(tt_fingerprint "$prompt")
+  known=$(cat "$(tt_trigger_file "$sid")" 2>/dev/null) || known=''
+  if [ -n "$known" ] && [ "$known" = "$fp" ]; then
+    printf 'machine\t%s\n' "$fp"
+    return 0
+  fi
+  # The command word, without its leading slash or any plugin: prefix.
+  word=$(printf '%s' "$prompt" | awk '{ print $1 }' | sed 's|^/||; s|^[^:]*:||')
+  if printf '%s' "$(tt_solo_commands)" | tr ',' '\n' | grep -qx -- "$word"; then
+    mkdir -p "$TT_HOME/trigger" 2>/dev/null || :
+    printf '%s\n' "$fp" > "$(tt_trigger_file "$sid")" 2>/dev/null || :
+    printf 'trigger\t%s\n' "$fp"
+    return 0
+  fi
+  printf 'human\t%s\n' "$fp"
+}
+
+cmd_hook() {
+  input=$(cat 2>/dev/null) || input=''
+
+  cwd=$(tt_json_str cwd "$input")
+  [ -n "$cwd" ] || cwd=$PWD
+  sid=$(tt_json_str session_id "$input")
+  [ -n "$sid" ] || sid='-'
+  evt=$(tt_json_str hook_event_name "$input")
+  [ -n "$evt" ] || evt='-'
+  # Codex calls the turn identifier turn_id and Claude Code calls it prompt_id.
+  # Both name a single user turn, so either fills the same column.
+  turn=$(tt_json_str turn_id "$input")
+  [ -n "$turn" ] || turn=$(tt_json_str prompt_id "$input")
+  [ -n "$turn" ] || turn='-'
+  tool=$(tt_json_str tool_use_id "$input")
+  [ -n "$tool" ] || tool='-'
+  agent=$(tt_json_str agent_id "$input")
+  [ -n "$agent" ] || agent='-'
+  agent_type=$(tt_json_str agent_type "$input")
+  [ -n "$agent_type" ] || agent_type='-'
+  session_source=$(tt_json_str source "$input")
+  [ -n "$session_source" ] || session_source='-'
+  words='-'
+  if [ "$evt" = Stop ]; then
+    message=$(tt_json_str last_assistant_message "$input")
+    [ -z "$message" ] || words=$(tt_word_count "$message")
+  fi
+  tool_name=$(tt_json_str tool_name "$input")
+  [ -n "$tool_name" ] || tool_name='-'
+  user_prompt=$(tt_json_str user_prompt "$input")
+  [ -n "$user_prompt" ] || user_prompt=$(tt_json_str prompt "$input")
+  prompt_class='-'; prompt_fp='-'
+  if [ "$evt" = UserPromptSubmit ]; then
+    classified=$(tt_classify_prompt "$user_prompt" "$sid")
+    prompt_class=$(printf '%s' "$classified" | cut -f1)
+    prompt_fp=$(printf '%s' "$classified" | cut -f2)
+  fi
+  [ "$evt" != SessionEnd ] || rm -f "$(tt_trigger_file "$sid")" 2>/dev/null || :
+
+  # Codex sets CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA next to its own
+  # PLUGIN_ROOT and PLUGIN_DATA, so a hook it runs answers to both names.
+  # Only Codex sets the unprefixed pair, so that is read first. CODEX_HOME is
+  # not consulted: a user may export it from a login shell, and a hook inherits
+  # the login environment, which would attribute every Claude beat as Codex.
+  if [ -n "${PLUGIN_ROOT:-}" ]; then harness=codex
+  elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || [ -n "${CLAUDECODE:-}" ]; then harness=claude
+  else harness='-'
+  fi
+
+  now=$(tt_now)
+  attrib=$(tt_attribute "$cwd")
+  proj=$(printf '%s' "$attrib" | cut -f1)
+  sub=$(printf '%s' "$attrib" | cut -f2)
+  mode=$(tt_mode "$cwd" "$sid")
+
+  row=$(printf '%s\tbeat\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    "$(tt_iso "$now")" "$now" "$now" "$(tt_machine)" "$harness" "$mode" \
+    "$(tt_clean "$proj")" "$(tt_clean "$sub")" "$(tt_clean "$sid")" "$(tt_clean "$evt")" \
+    "$(tt_clean "$turn")" "$(tt_clean "$tool")" "$(tt_clean "$agent")" \
+    "$(tt_clean "$agent_type")" "$words" "$(tt_clean "$session_source")" \
+    "$(tt_clean "$tool_name")" "$prompt_class" "$prompt_fp")
+  tt_append_row "$row" "$now" >/dev/null 2>&1 || :
+
+  # A replayed /loop or /schedule wake-up sets solo automatically; a genuine
+  # human prompt does not, and neither does a replay already covered by an
+  # earlier trigger (classified machine, not trigger again). Both the durable
+  # row and the capture-time cache are updated, so the transition is visible
+  # in a report immediately and to this session's very next beat.
+  if [ "$prompt_class" = trigger ]; then
+    tt_cache_mode solo "$cwd" "$sid" >/dev/null 2>&1 || :
+    tt_write_mode_row solo "$cwd" "$sid" "$now" auto >/dev/null 2>&1 || :
+  fi
+  return 0
+}
+
+(cmd_hook) || true
+exit 0

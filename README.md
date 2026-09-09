@@ -289,7 +289,8 @@ tt init                          create ~/.timetrack
 tt hooks-snippet [claude|codex]  print hook config for a hand-set-up machine
 ```
 
-`tt hook` is what the hooks call; you never run it by hand.
+`tt-hook` is what the hooks call; you never run it by hand. `tt hook` forwards
+to it for existing hand-set-up configurations.
 
 ### Logging time by hand
 
@@ -511,12 +512,12 @@ Claude Code runs the command from `hooks/hooks.json`; Codex selects
 harness fires, and both include everything that opens or closes tracked
 activity: Claude Code adds `PostToolUseFailure`, `PermissionDenied` and
 `StopFailure`, which are the endings `PostToolUse` and `Stop` do not cover, and
-Codex adds `Interrupt`. Both commands resolve `tt` through the plugin root. Claude Code uses the compatibility fallback, while the
+Codex adds `Interrupt`. Both commands resolve `tt-hook` through the plugin root. Claude Code uses the compatibility fallback, while the
 Codex-specific file uses `$PLUGIN_ROOT` directly:
 
 ```sh
-sh -c 'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt" hook'
-sh -c 'exec "$PLUGIN_ROOT/bin/tt" hook'
+sh -c 'exec "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/tt-hook"'
+sh -c 'exec "$PLUGIN_ROOT/bin/tt-hook"'
 ```
 
 The available variables differ by harness:

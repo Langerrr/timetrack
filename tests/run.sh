@@ -4,6 +4,7 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(dirname "$HERE")
 TT="$REPO/bin/tt"
+TT_HOOK="$REPO/bin/tt-hook"
 . "$HERE/lib.sh"
 
 SANDBOX=${TMPDIR:-/tmp}/tt-test-$$
@@ -129,8 +130,11 @@ clear_logs() { : > "$COMPACT"; : > "$LOG"; }
 clear_logs
 
 HOOKJSON='{"session_id":"abc123","transcript_path":"/x/y.jsonl","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse"}'
-printf '%s' "$HOOKJSON" | TT_NOW=1900000000 CLAUDE_PLUGIN_ROOT=/p sh "$TT" hook
+assert_eq "yes" "$([ -f "$TT_HOOK" ] && printf yes)" 'standalone hook entry point exists'
+assert_status 0 'standalone hook entry point is executable' -- test -x "$TT_HOOK"
+printf '%s' "$HOOKJSON" | TT_NOW=1900000000 CLAUDE_PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "1" "$(wc -l < "$LOG" | tr -d ' ')" 'one beat appended'
+assert_eq "20" "$(awk -F '\t' '{ print NF }' "$LOG")" 'standalone hook appends a 20-column beat'
 assert_eq "beat" "$(cut -f2 < "$LOG")" 'kind is beat'
 assert_eq "1900000000" "$(cut -f3 < "$LOG")" 'start is the current epoch'
 assert_eq "1900000000" "$(cut -f4 < "$LOG")" 'end equals start for a beat'
@@ -141,12 +145,12 @@ assert_eq "saas-backend" "$(cut -f9 < "$LOG")" 'subpath from cwd'
 assert_eq "abc123" "$(cut -f10 < "$LOG")" 'session id captured'
 
 clear_logs
-printf '%s' "$HOOKJSON" | TT_NOW=1900000001 PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$HOOKJSON" | TT_NOW=1900000001 PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "codex" "$(cut -f6 < "$LOG")" 'harness detected from PLUGIN_ROOT'
 
 clear_logs
 sh "$TT" solo "$TT_ROOT/sportx/saas-backend" >/dev/null
-printf '%s' "$HOOKJSON" | TT_NOW=1900000002 sh "$TT" hook
+printf '%s' "$HOOKJSON" | TT_NOW=1900000002 sh "$TT_HOOK"
 # A carried heartbeat state row for the earlier `tt solo` mode transition
 # can legitimately sit alongside the hook's own beat now that mode is
 # carried across a compaction boundary -- pick the beat row specifically,
@@ -156,30 +160,32 @@ assert_eq "solo" "$(awk -F '\t' '$2 == "beat" { v = $7 } END { print v }' "$LOG"
 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" >/dev/null
 
 clear_logs
-assert_status 0 'malformed stdin still exits 0' -- sh -c "printf 'not json' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' sh '$TT' hook"
+assert_status 0 'malformed stdin still exits 0' -- sh -c "printf 'not json' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' sh '$TT_HOOK'"
 assert_eq "1" "$(wc -l < "$LOG" | tr -d ' ')" 'malformed input still records a beat'
 
 clear_logs
-assert_status 0 'empty stdin still exits 0' -- sh -c "printf '' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' sh '$TT' hook"
+assert_status 0 'empty stdin still exits 0' -- sh -c "printf '' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' sh '$TT_HOOK'"
+assert_status 0 'standalone hook contains an unwritable home failure' -- sh -c "printf '%s' '$HOOKJSON' | TT_HOME=/dev/null TT_ROOT='$TT_ROOT' sh '$TT_HOOK'"
+assert_status 0 'tt hook forwards to the standalone entry point' -- sh -c "printf '%s' '$HOOKJSON' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' sh '$TT' hook"
 
 clear_logs
 COMMAJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/a,b","hook_event_name":"PreToolUse"}'
-printf '%s' "$COMMAJSON" | TT_NOW=1900000003 sh "$TT" hook
+printf '%s' "$COMMAJSON" | TT_NOW=1900000003 sh "$TT_HOOK"
 assert_eq "a,b" "$(cut -f9 < "$LOG")" 'a comma in cwd does not break attribution'
 
 clear_logs
 DECOYJSON='{"tool_input":{"cwd":"/decoy","command":"ls"},"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse"}'
-printf '%s' "$DECOYJSON" | TT_NOW=1900000004 sh "$TT" hook
+printf '%s' "$DECOYJSON" | TT_NOW=1900000004 sh "$TT_HOOK"
 assert_eq "saas-backend" "$(cut -f9 < "$LOG")" 'a cwd inside tool_input does not outrank the top-level cwd'
 
 clear_logs
 ESCJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/a\"b","hook_event_name":"PreToolUse"}'
-printf '%s' "$ESCJSON" | TT_NOW=1900000005 sh "$TT" hook
+printf '%s' "$ESCJSON" | TT_NOW=1900000005 sh "$TT_HOOK"
 assert_eq 'a\"b' "$(cut -f9 < "$LOG")" 'an escaped quote in cwd does not truncate the value'
 
 clear_logs
 EXTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"SubagentStart","turn_id":"turn-7","tool_use_id":"tool-8","agent_id":"agent-9","agent_type":"worker"}'
-printf '%s' "$EXTJSON" | TT_NOW=1900000006 PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$EXTJSON" | TT_NOW=1900000006 PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "20" "$(awk -F '\t' '{ print NF }' "$LOG")" 'new beats append six lifecycle fields plus tool name and prompt classification'
 assert_eq "turn-7" "$(cut -f12 < "$LOG")" 'turn id captured'
 assert_eq "tool-8" "$(cut -f13 < "$LOG")" 'tool id captured'
@@ -189,23 +195,23 @@ assert_eq "-" "$(cut -f17 < "$LOG")" 'an unrelated event has no session-start so
 
 clear_logs
 STARTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"SessionStart","source":"compact"}'
-printf '%s' "$STARTJSON" | TT_NOW=1900000010 PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$STARTJSON" | TT_NOW=1900000010 PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "compact" "$(cut -f17 < "$LOG")" 'a Codex SessionStart source is captured'
 
 clear_logs
 PROMPTIDJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse","prompt_id":"prompt-9","tool_use_id":"tool-9"}'
-printf '%s' "$PROMPTIDJSON" | TT_NOW=1900000011 CLAUDE_PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$PROMPTIDJSON" | TT_NOW=1900000011 CLAUDE_PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "prompt-9" "$(cut -f12 < "$LOG")" 'a Claude prompt_id fills the turn column'
 assert_eq "tool-9" "$(cut -f13 < "$LOG")" 'a Claude tool_use_id fills the tool column'
 
 clear_logs
 BOTHIDJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"PreToolUse","turn_id":"turn-9","prompt_id":"prompt-9"}'
-printf '%s' "$BOTHIDJSON" | TT_NOW=1900000012 PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$BOTHIDJSON" | TT_NOW=1900000012 PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "turn-9" "$(cut -f12 < "$LOG")" 'turn_id outranks prompt_id when a harness sends both'
 
 clear_logs
 STOPJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"Stop","turn_id":"turn-7","last_assistant_message":"one two\\nthree four five"}'
-printf '%s' "$STOPJSON" | TT_NOW=1900000007 PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$STOPJSON" | TT_NOW=1900000007 PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "5" "$(cut -f16 < "$LOG")" 'Stop stores the assistant output word count'
 assert_eq "0" "$(grep -c 'one two' "$LOG")" 'Stop never stores raw assistant output'
 
@@ -216,14 +222,14 @@ assert_eq "solo" "$(cut -f7 < "$LOG")" 'a mode event records the selected mode'
 assert_eq "abc123" "$(cut -f10 < "$LOG")" 'a mode event can target one session'
 clear_logs
 PROMPTJSON='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"UserPromptSubmit","turn_id":"turn-8"}'
-printf '%s' "$PROMPTJSON" | TT_NOW=1900000008 PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$PROMPTJSON" | TT_NOW=1900000008 PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "solo" "$(cut -f7 < "$LOG")" 'a prompt does not override an explicit solo signal'
 assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx/saas-backend" abc123)" 'solo remains sticky until an explicit paired signal'
 TT_NOW=1900000009 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" --session abc123 >/dev/null
 
 clear_logs
 NULLSTOP='{"session_id":"abc123","cwd":"'"$TT_ROOT"'/sportx/saas-backend","hook_event_name":"Stop","turn_id":"turn-8","last_assistant_message":null}'
-printf '%s' "$NULLSTOP" | TT_NOW=1900000009 PLUGIN_ROOT=/p sh "$TT" hook
+printf '%s' "$NULLSTOP" | TT_NOW=1900000009 PLUGIN_ROOT=/p sh "$TT_HOOK"
 assert_eq "-" "$(cut -f16 < "$LOG")" 'a null assistant message records no word estimate'
 
 # Concurrent explicit writes remain valid and the last completed transition is
@@ -241,7 +247,7 @@ assert_eq "1" "$(awk -F '\t' -v path="$TT_ROOT/sportx/saas-backend" \
 sh "$TT" paired "$TT_ROOT/sportx/saas-backend" >/dev/null
 
 assert_status 0 'an internal hook formatting failure is contained' -- \
-  sh -c "printf '%s' '$PROMPTJSON' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_NOW=bad PLUGIN_ROOT=/p sh '$TT' hook"
+  sh -c "printf '%s' '$PROMPTJSON' | TT_HOME='$TT_HOME' TT_ROOT='$TT_ROOT' TT_NOW=bad PLUGIN_ROOT=/p sh '$TT_HOOK'"
 
 printf 'Task 4: manual entries\n'
 assert_eq "5400" "$(sh "$TT" debug-seconds 90m)" '90m parses'
@@ -537,7 +543,7 @@ TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report today >/dev/null
 CONCURRENT_JSON='{"session_id":"concurrent","cwd":"'"$TT_ROOT"'/sportx","hook_event_name":"PreToolUse","turn_id":"turn","tool_use_id":"tool"}'
 i=1
 while [ "$i" -le 20 ]; do
-  (printf '%s' "$CONCURRENT_JSON" | TZ=UTC TT_NOW="$((TODAY_A + i))" PLUGIN_ROOT=/p sh "$TT" hook) &
+  (printf '%s' "$CONCURRENT_JSON" | TZ=UTC TT_NOW="$((TODAY_A + i))" PLUGIN_ROOT=/p sh "$TT_HOOK") &
   i=$((i + 1))
 done
 wait
@@ -654,16 +660,19 @@ assert_status 1 'sync pull without a host is rejected' -- sh "$TT" sync pull
 assert_status 1 'install-remote without a host is rejected' -- sh "$TT" install-remote
 assert_contains "$(sh "$TT" hooks-snippet claude)" "PreToolUse" 'claude snippet names the events'
 assert_contains "$(sh "$TT" hooks-snippet claude)" "PermissionDenied" 'claude snippet names the denial event'
+assert_contains "$(sh "$TT" hooks-snippet claude)" "bin/tt-hook" 'claude snippet uses the standalone hook entry point'
 CLAUDEHOOKS=$(cat "$REPO/hooks/hooks.json")
 assert_contains "$CLAUDEHOOKS" 'PostToolUseFailure' 'Claude hooks close a failed tool call'
 assert_contains "$CLAUDEHOOKS" 'PermissionDenied' 'Claude hooks close a denied tool call'
 assert_contains "$CLAUDEHOOKS" 'StopFailure' 'Claude hooks close a turn that ends in an error'
 assert_contains "$CLAUDEHOOKS" 'SessionEnd' 'Claude hooks observe the end of a session'
 assert_contains "$CLAUDEHOOKS" 'SubagentStart' 'Claude hooks observe subagent lifecycle'
+assert_contains "$CLAUDEHOOKS" 'bin/tt-hook' 'Claude hooks use the standalone hook entry point'
 assert_contains "$(sh "$TT" hooks-snippet codex)" "PLUGIN_ROOT" 'codex snippet names the plugin root'
 assert_contains "$(sh "$TT" hooks-snippet codex)" "Interrupt" 'codex snippet includes interruption events'
 assert_contains "$(cat "$REPO/.codex-plugin/plugin.json")" 'hooks/codex-hooks.json' 'the Codex manifest selects Codex-specific hooks'
 assert_contains "$(cat "$REPO/hooks/codex-hooks.json" 2>/dev/null)" 'SubagentStart' 'Codex hooks include subagent lifecycle events'
+assert_contains "$(cat "$REPO/hooks/codex-hooks.json" 2>/dev/null)" 'bin/tt-hook' 'Codex hooks use the standalone hook entry point'
 
 # The skill command must work from a plugin-cache-shaped copy with no root bin
 # directory on PATH.
@@ -690,32 +699,32 @@ TAB=$(printf '\t')
 # kind rather than by position.
 last_beat() { awk -F '\t' '$2 == "beat" { last = $0 } END { print last }' "$CUR"; }
 
-hook_json s1 UserPromptSubmit "please review the design" | sh "$TT" hook
+hook_json s1 UserPromptSubmit "please review the design" | sh "$TT_HOOK"
 LAST=$(last_beat)
 assert_eq "human" "$(printf '%s' "$LAST" | cut -f19)" 'an ordinary prompt classifies as human'
 assert_status 1 'a human prompt records a fingerprint' -- \
   sh -c "printf '%s' \"$LAST\" | cut -f20 | grep -qx -"
 
-hook_json s1 PreToolUse "" Bash | sh "$TT" hook
+hook_json s1 PreToolUse "" Bash | sh "$TT_HOOK"
 assert_eq "Bash" "$(last_beat | cut -f18)" 'tool_name is recorded'
 
-hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT" hook
+hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT_HOOK"
 assert_eq "trigger" "$(last_beat | cut -f19)" 'a solo-trigger command classifies as trigger'
 assert_eq "solo" "$(sh "$TT" debug-mode "$TT_ROOT/sportx" s2)" 'a trigger command sets solo for its session'
 assert_eq "paired" "$(sh "$TT" debug-mode "$TT_ROOT/sportx" s1)" 'another session keeps its own mode'
 assert_eq "auto" "$(grep "${TAB}mode${TAB}" "$CUR" | tail -1 | cut -f11)" 'an automatic transition records its origin'
 
-hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT" hook
+hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT_HOOK"
 assert_eq "machine" "$(last_beat | cut -f19)" 'a replayed trigger prompt classifies as machine'
 
-hook_json s2 UserPromptSubmit "how is it going" | sh "$TT" hook
+hook_json s2 UserPromptSubmit "how is it going" | sh "$TT_HOOK"
 assert_eq "human" "$(last_beat | cut -f19)" 'a check-in during a solo run is a human prompt'
 
-hook_json s2 SessionEnd "" | sh "$TT" hook
-hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT" hook
+hook_json s2 SessionEnd "" | sh "$TT_HOOK"
+hook_json s2 UserPromptSubmit "/goal ship the redesign" | sh "$TT_HOOK"
 assert_eq "trigger" "$(last_beat | cut -f19)" 'SessionEnd clears the recorded trigger'
 
-hook_json s3 UserPromptSubmit "/deploy now" | TT_SOLO_COMMANDS=deploy sh "$TT" hook
+hook_json s3 UserPromptSubmit "/deploy now" | TT_SOLO_COMMANDS=deploy sh "$TT_HOOK"
 assert_eq "trigger" "$(last_beat | cut -f19)" 'the trigger list is configurable'
 
 printf 'Task 11: report wiring (effort and machine time)\n'
