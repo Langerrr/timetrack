@@ -1,50 +1,20 @@
-"""Rolls completed days into bounded totals.
+"""Bounded effort coverage and finalized machine totals, with pending state.
 
-A day that has closed cannot change, so its spans collapse into one total
-per project, subpath and category. Rows at or after the cutoff are carried
-forward untouched, because the reconstruction that covers them is not
-finished yet. Two exceptions carry more than that:
-
-- A manual span that straddles the cutoff is already fully known (both its
-  ends were logged at once, not reconstructed), so its future portion is
-  carried forward too rather than lost.
-- A heartbeat, turn or tool bracket still active at the cutoff is carried
-  as a `state` row (see state.py) dated at its own real, pre-cutoff
-  timestamp, so a later, independent reconstruction classifies whatever
-  follows it exactly as an uncompacted one would -- and floors the result
-  at the cutoff, since the pre-cutoff portion is already counted below.
-
-History itself is computed from every row given, not just what precedes
-the cutoff: a turn or bracket that closes inside the carried rows should
-use its real close time here too, rather than the open-ended estimate a
-past-only view would be forced to guess at. The result is then clipped to
-`[floor, cutoff)`, where `floor` is 0 unless `rows` itself already carries
-state from an earlier round (state.floor_of) -- in which case that floor
-keeps this round from re-crediting what an earlier round already did.
-
-Effort categories are made disjoint here in the same priority order --
-PAIRED > CHECKIN > MANUAL -- that build_report applies to live spans, so a
-historical total sums to the EFFORT a live report over the same rows would
-have shown. Machine time is never unioned: two tools running at once are
-two tools' worth of TOOL time, and a subagent's own AGENT time stands
-beside its parent's.
+Effort history retains coalesced project/day coverage for union with other
+sources and later manual additions. Machine totals contain only closed,
+resolved contributions. Unresolved estimates remain replaceable in current
+state, including pre-cutoff seconds which later evidence can correct.
 """
 
-import time
 from typing import Dict, Iterable, List, Tuple
 
 from .effort import effort_spans
 from .events import Row
-from .intervals import Span, clip, split_days, subtract, total, union
+from .intervals import clip, split_days
 from .machine import machine_spans
 from .modes import ModeTimeline
 from .report import Options
-from .state import floor_of, write_lines
-
-EFFORT_CATEGORIES = ("paired", "checkin", "manual")
-MACHINE_CATEGORIES = ("agent", "tool")
-CATEGORIES = EFFORT_CATEGORIES + MACHINE_CATEGORIES
-
+from .state import write_lines
 
 def _line(day, day_end, project, subpath, category, seconds):
     # type: (int, int, str, str, str, int) -> str
@@ -77,79 +47,46 @@ def _day_end(day, boundaries, cutoff):
 
 
 def compact(rows, cutoff, options):
-    # type: (Iterable[Row], int, Options) -> Tuple[List[str], List[str]]
+    # Reconstruct only observations available before the cutoff. Estimates
+    # are rendered from carried facts, never frozen into machine totals.
+    from .coverage import with_history
     rows = list(rows)
-
-    carry = []  # type: List[str]
+    carry = []
+    history = []
     for row in rows:
-        if row.start >= cutoff:
+        if row.kind == 'total':
+            history.append(_carry_line(row))
+        elif row.start >= cutoff:
             carry.append(_carry_line(row))
-        elif row.kind == "span" and row.end > cutoff:
-            carry.append(_carry_line(row._replace(
-                start=cutoff, iso=time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(cutoff)))))
-
+        elif row.kind in ('span', 'coverage') and row.end > cutoff:
+            carry.append(_carry_line(row._replace(start=cutoff)))
     past = [r for r in rows if r.start < cutoff]
     if not past:
-        return ([], carry)
-
-    lower = floor_of(rows)
-    if lower is None:
-        lower = 0
-
-    # History uses every row, so a bracket that closes inside what is being
-    # carried still gets its real close time here rather than an estimate.
-    timeline = ModeTimeline.from_rows(rows)
-    effort = effort_spans(rows, timeline, options.presence_gap,
-                          options.checkin_window)
-    machine = machine_spans(rows, options.max_active)
-
-    # What state to carry is answered from a strictly past-only view: a
-    # bracket this call's own full-row pass already resolved (its close
-    # lives in `rows`, whether that close precedes or follows the cutoff)
-    # needs no seed -- it is either already inside history below or, being
-    # at or after the cutoff, already carried verbatim as the close's own
-    # row. Only what past alone cannot resolve needs carrying forward.
-    machine_past = machine_spans(past, options.max_active)
-    carry.extend(write_lines(past, cutoff, options.presence_gap,
-                             options.max_active, machine_past))
-
-    sources = {
-        "paired": effort.paired,
-        "checkin": effort.checkin,
-        "manual": effort.manual,
-        "agent": machine.agent,
-        "tool": machine.tool,
-    }
-
-    buckets = {}  # type: Dict[Tuple[int, str, str], Dict[str, List[Span]]]
-    for category, entries in sources.items():
+        return history, carry
+    timeline = ModeTimeline.from_rows(past)
+    effort = effort_spans(past, timeline, options.presence_gap, options.checkin_window)
+    machine = machine_spans(past, options.max_active)
+    carry.extend(write_lines(past, cutoff, options.checkin_window, options.max_active, machine))
+    for category, entries in with_history(effort, past).items():
         for project, subpath, span in entries:
-            for clipped in clip([span], lower, cutoff):
+            for clipped in clip([span], 0, cutoff):
+                for _day, piece in split_days([clipped], options.boundaries):
+                    start, end = piece
+                    fields = _line(start, end, project, subpath, category, end-start).split('\t')
+                    fields[1] = 'coverage'
+                    history.append('\t'.join(fields))
+    buckets = {}
+    for category, entries in [('agent', machine.stable_agent), ('tool', machine.stable_tool)]:
+        for project, subpath, span in entries:
+            for clipped in clip([span], 0, cutoff):
                 for day, piece in split_days([clipped], options.boundaries):
-                    bucket = buckets.setdefault((day, project, subpath), {})
-                    bucket.setdefault(category, []).append(piece)
-
-    history = []
-    for key in sorted(buckets):
-        day, project, subpath = key
-        by_category = buckets[key]
-
-        claimed = []  # type: List[Span]
-        seconds = {}  # type: Dict[str, int]
-        for category in EFFORT_CATEGORIES:
-            remaining = subtract(union(by_category.get(category, [])), claimed)
-            seconds[category] = total(remaining)
-            claimed = union(claimed + remaining)
-        for category in MACHINE_CATEGORIES:
-            seconds[category] = total(by_category.get(category, []))
-
-        day_end = _day_end(day, options.boundaries, cutoff)
-        for category in CATEGORIES:
-            if seconds[category] <= 0:
-                continue
-            history.append(_line(day, day_end, project, subpath, category,
-                                 seconds[category]))
-    return (history, carry)
+                    key = (day, project, subpath, category)
+                    buckets[key] = buckets.get(key, 0) + piece[1] - piece[0]
+    for (day, project, subpath, category), seconds in sorted(buckets.items()):
+        if seconds:
+            history.append(_line(day, _day_end(day, options.boundaries, cutoff),
+                                 project, subpath, category, seconds))
+    return history, carry
 
 
 def main(argv=None, stdin=None):

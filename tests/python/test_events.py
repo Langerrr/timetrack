@@ -134,3 +134,13 @@ class TestLegacyRowsDoNotCrash(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CoverageValidationTests(unittest.TestCase):
+    def test_coverage_requires_explicit_interval_and_matching_duration(self):
+        fields = ['-', 'coverage', '100', '160', '-', '-', 'paired', 'p', '.',
+                  '-', '-', '-', '-', '-', '-', '60', '-', '-', '-', '-']
+        self.assertIsNotNone(parse_line('\t'.join(fields)))
+        fields[15] = '120'
+        self.assertIsNone(parse_line('\t'.join(fields)))
+        self.assertIsNone(parse_line('\t'.join(fields[:11])))

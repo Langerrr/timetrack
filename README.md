@@ -160,7 +160,7 @@ tt init
 ```
 
 That writes `~/.timetrack/` with a `config`, `events-<machine>.tsv` for compact
-daily totals, `current-<machine>.tsv` for today's detail, and a `modes` file. It
+daily coverage and machine totals, `current-<machine>.tsv` for today's detail, and a `modes` file. It
 also creates or extends `.gitignore` so current detail and lock directories are
 not committed. To keep the compact history across machines, make the directory
 a git repository with a **private** remote:
@@ -328,6 +328,12 @@ sub-directory. `--since` and `--until` take `YYYY-MM-DD`. `EFFORT` is the sum of
 `PAIRED`, `CHECKIN`, and `MANUAL`. `AGENT` and `TOOL` use agent-hours and stand
 apart from that total.
 
+Effort is unioned within each project, then summed across projects in every
+view. When several subpaths claim the same second in the winning category
+(`PAIRED` before `CHECKIN` before `MANUAL`), the lexicographically smallest
+normalized subpath receives it. Detail rows show these allocated shares and
+sum to project effort; changing grouping never changes the portfolio total.
+
 ```sh
 $ tt sessions
 solo    all          /home/lan/workspace/sportx
@@ -349,13 +355,20 @@ hours on sportx for the architecture review", "I'm heading out, let it run", or
 Each machine has two TAB-separated files:
 
 - `events-<machine>.tsv` is the compact history intended for Git. Completed
-  local days occupy a few `total` rows per project and mode.
+  local days retain canonical `coverage` runs for effort and additive `total`
+  rows for finalized machine time. Existing duration-only totals remain readable.
 - `current-<machine>.tsv` contains detailed `beat`, `mode`, and `span` rows for the
   current local day. It is gitignored.
 
 On the first hook, manual entry, or report after midnight, `tt` reconstructs the
 completed day, merges it into the compact file, and removes those detailed rows.
-A small internal `state` row may remain when an interval crosses midnight. An
+Internal `state` rows retain the last heartbeat and unresolved lifecycle
+openings until later evidence resolves them, even across several rollovers.
+Machine estimates remain provisional in this state, so a later matching close
+can replace a capped estimate with the full duration. Closed tool coverage
+needed to subtract from pending agent work is coalesced, as are pending closed
+turns; raw hook history is discarded. A recent Stop remains as a bounded
+continuation seed and ordinary SessionStart clears lifecycle state. An
 old single-file `events-<machine>.tsv` is migrated automatically the first time
 the updated tool writes or reports. Before replacing either file, rollover
 validates both its source rows and generated rows; unexpected content stops the
@@ -402,13 +415,37 @@ the other documented lifecycle events). Manual spans and old beats may remain
 eleven columns while migration runs. Raw assistant-message text is never
 persisted.
 
-Compact `total` rows reuse the stable project and category columns. Column 3 is
-the local day's first epoch, column 4 is the next local-day boundary, and column
-16 is the number of seconds for `paired`, `checkin`, `manual`, `agent`, or
-`tool`. The first `compact` row stores the current local-day marker used for a
-constant-time rollover check.
+New compact `coverage` rows use all 20 columns. Columns 3 and 4 are the exact
+start and exclusive end of an effort run; column 7 is `paired`, `checkin`, or
+`manual`; columns 8 and 9 give project and allocated subpath; column 16 is
+`end - start`. Other fields are `-`. Runs are disjoint and coalesced within
+project and local day, so their count is bounded by the integer seconds in
+that day, independent of event count. They are unioned with other machines'
+coverage and later `tt add` entries before reporting or the next compaction.
 
-Every row holds both epoch seconds and a preformatted local timestamp, so
+Compact `total` rows retain the day's bounds in columns 3 and 4, category in
+column 7, and seconds in column 16. New totals contain finalized `agent` or
+`tool` durations. Older effort totals remain an opaque additive baseline:
+timestamp coverage discarded by the old format cannot be recovered.
+
+Internal 20-column `state` rows preserve machine, harness, session and worker
+identity. Column 11 is `heartbeat`, `turn`, `tool`, `continuation`, `closed-turn`,
+or `tool-coverage`. The first four carry an instant in columns 3 and 4; the
+latter two carry a coalesced interval. Column 16 is reserved as zero.
+A tool state retains tool id/name in columns 13/18 and its owning worker in
+column 14; a spawning tool's column 15 records its associated child id. A solo
+heartbeat uses column 17=`episode` and columns 15/18 for its episode's original
+project/subpath. An unassociated child tool uses column 17=`unassociated`; a later association
+does not retroactively claim it. These internal meanings do not change captured
+beat columns.
+The first `compact` row records the current local-day marker for the fast path.
+
+Observed child tools are subtracted only from their owning worker. When a
+child has exactly one eligible active spawning bracket in its session, that
+bracket owns the child. Ambiguous or missing associations leave the child's
+tools in TOOL without subtracting them from an arbitrary spawned worker.
+
+Captured rows hold epoch seconds and a preformatted local timestamp, so
 reporting compares and sums integers and behaves identically on Linux and macOS.
 
 ### Attribution
@@ -424,7 +461,8 @@ sequential pieces for `--detail` instead of creating concurrent copies.
 ### Fixing a mistake
 
 For today, edit or delete the relevant `span` in `current-<machine>.tsv`. After a
-day has been compacted, correct the seconds in its matching `total` row in
+day has been compacted, correct its matching `coverage` interval (and duration),
+or the seconds of an opaque legacy `total` row, in
 `events-<machine>.tsv`. Beat detail is temporary implementation data and is
 discarded automatically after the day closes.
 
@@ -434,7 +472,7 @@ discarded automatically after the day closes.
 wins over it.
 
 Settings that affect interval reconstruction are applied when a day is
-compacted. Changing them later affects current and future detail, not totals
+compacted. Changing them later affects current detail and pending state, not finalized history
 already stored for completed days.
 
 ```

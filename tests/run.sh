@@ -395,7 +395,7 @@ LOG=$DETAIL_LOG
 OUT=$(TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report --since 2026-09-02 --until 2026-09-03)
 assert_eq "0h 10m" "$(printf '%s\n' "$OUT" | report_cell sportx 1)" 'legacy completed detail keeps its reported total'
 assert_eq "0" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$COMPACT")" 'the compact file retains no beat rows'
-assert_eq "600" "$(awk -F '\t' '$2 == "total" && $7 == "paired" && $8 == "sportx" { print $16 }' "$COMPACT")" 'a completed project becomes one second total'
+assert_eq "600" "$(awk -F '\t' '$2 == "coverage" && $7 == "paired" && $8 == "sportx" { print $16 }' "$COMPACT")" 'a completed project becomes one canonical coverage run'
 assert_eq "2" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$LOG")" 'today detail moves to the current file'
 assert_eq "$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:00')" "$(awk -F '\t' '$2 == "compact" { print $3 }' "$COMPACT")" 'the compact marker records the active local day'
 assert_contains "$(cat "$TT_HOME/.gitignore")" "current-*.tsv" 'legacy migration automatically ignores current detail'
@@ -492,10 +492,10 @@ assert_eq "$(TZ=UTC sh "$TT" debug-epoch '2026-09-03 00:00')" "$(awk -F '\t' '$2
 clear_logs
 TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" add sportx 30m --at '2026-09-02 12:00' >/dev/null
 assert_eq "0" "$(awk -F '\t' '$2 == "span" { n++ } END { print n + 0 }' "$LOG")" 'a late manual entry leaves no completed span in current detail'
-assert_eq "1800" "$(awk -F '\t' '$2 == "total" && $7 == "manual" && $8 == "sportx" { print $16 }' "$COMPACT")" 'a late manual entry joins its completed-day total'
+assert_eq "1800" "$(awk -F '\t' '$2 == "coverage" && $7 == "manual" && $8 == "sportx" { print $16 }' "$COMPACT")" 'a late manual entry joins its completed-day coverage'
 
-# Many hook events collapse to a fixed number of aggregate rows. A stale but
-# inactive stream does not remain as carry state indefinitely.
+# Many hook events collapse to fixed aggregate rows plus the final heartbeat,
+# which must survive to classify a later half-gap even after a long absence.
 clear_logs
 DETAIL_LOG=$LOG
 LOG=$COMPACT
@@ -516,7 +516,7 @@ LOG=$DETAIL_LOG
 TZ=UTC TT_NOW="$REPORT_NOW" sh "$TT" report yesterday >/dev/null
 assert_eq "0" "$(awk -F '\t' '$2 == "beat" { n++ } END { print n + 0 }' "$COMPACT" "$LOG")" 'completed dense detail is discarded after rollover'
 assert_eq "2" "$(wc -l < "$COMPACT" | tr -d ' ')" 'one hundred beats become a header and one total row'
-assert_eq "0" "$(wc -l < "$LOG" | tr -d ' ')" 'an inactive old stream leaves no current carry row'
+assert_eq "1" "$(wc -l < "$LOG" | tr -d ' ')" 'an old stream retains only its unresolved heartbeat'
 
 # An explicit transition inside a cross-midnight turn is folded into the old
 # day and carried as the effective mode for the retained side.

@@ -72,6 +72,15 @@ def parse_line(line):
     fields = line.split("\t")
     if len(fields) < MIN_COLUMNS:
         return None
+    if fields[1] == 'coverage':
+        if len(fields) != COLUMNS or fields[6] not in ('paired', 'checkin', 'manual'):
+            return None
+        try:
+            start, end, seconds = int(fields[2]), int(fields[3]), int(fields[15])
+        except ValueError:
+            return None
+        if start < 0 or end <= start or seconds != end - start or not fields[7] or not fields[8]:
+            return None
     if fields[1] == "total" and len(fields) == OLD_TOTAL_COLUMNS:
         category = _OLD_TOTAL_CATEGORY.get(fields[6])
         if category is None:

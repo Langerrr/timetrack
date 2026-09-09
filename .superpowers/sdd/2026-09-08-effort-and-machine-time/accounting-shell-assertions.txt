@@ -1,0 +1,204 @@
+unknown subcommand exits 2
+TT_HOME override honoured
+TT_NOW override honoured
+machine from config
+report help lists the yesterday period
+report help explains the lower date bound
+report help lists grouping values
+help report opens report-specific help
+report rejects an unknown grouping value
+project root gives subpath .
+nested gives subpath
+outside root attributes to ~outside
+trailing slash tolerated
+the workspace root itself attributes to ~root
+a trailing slash on TT_ROOT is stripped
+the configured project root has a public read-only command
+several trailing slashes are stripped
+a trailing slash on TT_ROOT still attributes the project
+a trailing slash on TT_ROOT still attributes the root itself
+a trailing slash in the config file is stripped too
+default mode is paired
+solo is recorded
+a project mode reaches its nested directories
+sibling directory is unaffected
+paired is recorded
+a later project transition reaches nested directories
+sessions lists the mode
+sessions lists the true path
+setting one of two colliding paths leaves the other alone
+colliding paths hold different modes at once
+both colliding paths are listed
+twenty simultaneous sets on distinct paths all survive
+the lock is released once the set finishes
+a path holding a tab is refused
+a path holding a newline is refused
+a refused path writes nothing
+a tab-bearing path reads as paired rather than failing
+a newline-bearing path reads as paired rather than failing
+a refused newline path fabricates no entry for another path
+a repeated set replaces its line
+the replacement is what reads back
+a session-specific mode reaches that session below the path
+a session-specific mode leaves a peer session alone
+sessions identifies a narrowed mode
+an in-session command automatically narrows to its Codex session
+automatic session scope does not affect a peer
+--all-sessions overrides in-session narrowing
+one beat appended
+kind is beat
+start is the current epoch
+end equals start for a beat
+harness detected from CLAUDE_PLUGIN_ROOT
+mode defaults to paired
+project from cwd
+subpath from cwd
+session id captured
+harness detected from PLUGIN_ROOT
+mode reflects the session directory
+malformed stdin still exits 0
+malformed input still records a beat
+empty stdin still exits 0
+a comma in cwd does not break attribution
+a cwd inside tool_input does not outrank the top-level cwd
+an escaped quote in cwd does not truncate the value
+new beats append six lifecycle fields plus tool name and prompt classification
+turn id captured
+tool id captured
+subagent id captured
+subagent type captured
+an unrelated event has no session-start source
+a Codex SessionStart source is captured
+a Claude prompt_id fills the turn column
+a Claude tool_use_id fills the tool column
+turn_id outranks prompt_id when a harness sends both
+Stop stores the assistant output word count
+Stop never stores raw assistant output
+an explicit mode change is recorded as an event
+a mode event records the selected mode
+a mode event can target one session
+a prompt does not override an explicit solo signal
+solo remains sticky until an explicit paired signal
+a null assistant message records no word estimate
+concurrent explicit transitions are both durable
+concurrent transitions leave one valid all-session row per path
+an internal hook formatting failure is contained
+90m parses
+1.5h parses
+2h30m parses
+bare number is minutes
+garbage duration is rejected
+kind is span
+span starts one duration before now
+span ends now
+mode is manual
+project recorded
+note recorded
+no session id for a span
+--at sets the start
+--at plus duration sets the end
+the written row is echoed
+yesterday includes the complete previous day
+yesterday excludes today
+manual spans are clipped at both report boundaries
+--until includes the final 59 seconds of its date
+a day with no 00:00 starts at its first real instant
+a London spring-forward day anchors at 00:00 GMT
+a London fall-back day anchors at 00:00 BST
+a New York spring-forward day anchors at 00:00 EST
+the half hour just after a spring forward anchors on its own day
+a fall-back day, 25 hours long, anchors at 00:00 EDT
+a 30-minute spring forward anchors at 00:00
+the half hour just after a 30-minute shift anchors on its own day
+a 30-minute fall back anchors at 00:00
+a leading-zero hour and minute are read as base ten
+legacy completed detail keeps its reported total
+the compact file retains no beat rows
+a completed project becomes one canonical coverage run
+today detail moves to the current file
+the compact marker records the active local day
+legacy migration automatically ignores current detail
+a repeated same-day rollover does not rewrite totals
+a repeated same-day rollover leaves detail unchanged
+a same-day report repairs the current-detail ignore rule
+a same-day report repairs the event-lock ignore rule
+same-day raw rows are removed from compact history
+same-day raw rows move to current detail
+an unknown stored row stops compaction
+an unknown stored row leaves compact history unchanged
+an unknown stored row leaves current detail unchanged
+malformed successful reporter output stops compaction
+malformed reporter output leaves compact history unchanged
+malformed reporter output leaves current detail unchanged
+a sort failure stops compaction
+a sort failure leaves compact history unchanged
+a sort failure leaves current detail recoverable
+the compact side of a crossing manual span is exact
+the retained side of a crossing manual span is exact
+the retained span is clipped at midnight
+a late manual entry leaves no completed span in current detail
+a late manual entry joins its completed-day coverage
+completed dense detail is discarded after rollover
+one hundred beats become a header and one total row
+an old stream retains only its unresolved heartbeat
+rollover compacts the paired side before a transition
+a compacted transition does not remain as unbounded raw history
+twenty concurrent hook beats all survive
+the event lock is released after concurrent appends
+init creates a tracked compact file
+init creates a separate current detail file
+init keeps current detail out of Git
+init keeps event locks out of Git
+init keeps interrupted rollover temporaries out of Git
+init preserves a final ignore line that had no newline
+sync pull reads from the host
+sync pull names the host log file
+sync pull also names the host current file
+sync pull drives rsync, not a remote command
+install-remote runs on the named host
+install-remote clones the public repository
+install-remote names the machine in its config
+install-remote transfers no files
+a config with no trailing newline keeps its last key on its own line
+the machine name is readable afterwards
+one machine line, not two
+a stale machine name is replaced
+the other keys survive the replacement
+a config rewrite that fails stops the install
+a failed rewrite leaves no machine name behind
+a failed rewrite leaves no half-written config behind
+a connection failure blames the connection
+a failure on the far side says the host was reached
+install-remote refuses a host name that is not one
+sync pull refuses a host name that is not one
+sync pull without a host is rejected
+install-remote without a host is rejected
+claude snippet names the events
+claude snippet names the denial event
+Claude hooks close a failed tool call
+Claude hooks close a denied tool call
+Claude hooks close a turn that ends in an error
+Claude hooks observe the end of a session
+Claude hooks observe subagent lifecycle
+codex snippet names the plugin root
+codex snippet includes interruption events
+the Codex manifest selects Codex-specific hooks
+Codex hooks include subagent lifecycle events
+the bundled skill command resolves its copied plugin root
+an ordinary prompt classifies as human
+a human prompt records a fingerprint
+tool_name is recorded
+a solo-trigger command classifies as trigger
+a trigger command sets solo for its session
+another session keeps its own mode
+an automatic transition records its origin
+a replayed trigger prompt classifies as machine
+a check-in during a solo run is a human prompt
+SessionEnd clears the recorded trigger
+the trigger list is configurable
+the report names the effort column
+the report names the agent column
+the report names the tool column
+the retired estimate column is gone
+grouping by day names the day column
+a day row is labeled with a date, not a raw epoch

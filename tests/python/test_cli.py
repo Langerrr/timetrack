@@ -108,6 +108,38 @@ class TestReportCLI(unittest.TestCase):
         completed = self.run_tt("report", TT_NOW=1900100000)
         self.assertEqual(completed.returncode, 0)
 
+    def test_historical_manual_additions_reconcile_stored_coverage(self):
+        for _ in range(2):
+            self.run_tt('add', 'sportx', '1h', '--at', '1970-01-01 12:00', TT_NOW=86500)
+        output = self.report('--since', '1970-01-01', '--until', '1970-01-02', TT_NOW=86500)
+        self.assertEqual(self.durations(output), ['0h 00m', '0h 00m', '1h 00m',
+                                                  '1h 00m', '0h 00m', '0h 00m'])
+        from ttreport.events import parse_stream
+        history = self.home / ('events-%s.tsv' % self.machine)
+        runs = [r for r in parse_stream(history.read_text().splitlines()) if r.kind == 'coverage']
+        self.assertEqual([(r.start, r.end) for r in runs], [(43200, 46800)])
+
+    def test_rollover_before_a_later_prompt_and_stop_preserves_old_seconds(self):
+        from test_compact import prompt_row, beat
+        def line(row):
+            return '\t'.join(str(v) for v in row._replace(machine=self.machine))
+        def report(at):
+            return self.report('--since', '1970-01-01', '--until', '1970-01-04', TT_NOW=at)
+        self.write_rows(line(prompt_row(86340)))
+        report(86450)  # rollover occurs before the resolving prompt exists
+        with self.current.open('a') as handle:
+            handle.write(line(prompt_row(86460)) + '\n')
+        output = report(86500)
+        self.assertEqual(self.durations(output), ['0h 02m', '0h 00m', '0h 00m',
+                                                  '0h 02m', '1h 02m', '0h 00m'])
+        self.assertEqual(report(172850), output)
+        with self.current.open('a') as handle:
+            handle.write(line(beat(172860, 'Stop')) + '\n')
+        output = report(172900)
+        self.assertEqual(self.durations(output), ['0h 02m', '0h 00m', '0h 00m',
+                                                  '0h 02m', '24h 02m', '0h 00m'])
+        self.assertEqual(report(259250), output)
+
 
 if __name__ == "__main__":
     unittest.main()

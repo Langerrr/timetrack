@@ -44,6 +44,12 @@ def _presence_key(row):
     return (row.machine, row.harness, row.project + "/" + row.subpath)
 
 
+def episode_location(row):
+    if row.kind == 'state' and row.session_source == 'episode':
+        return row.agent_type, row.tool_name
+    return row.project, row.subpath
+
+
 def effort_spans(rows, timeline, presence_gap, checkin_window):
     # type: (Iterable[Row], ModeTimeline, int, int) -> EffortSpans
     paired = []  # type: List[Entry]
@@ -69,7 +75,8 @@ def effort_spans(rows, timeline, presence_gap, checkin_window):
             if not episode:
                 return
             first, last = episode[0], episode[-1]
-            checkin.append((first.project, first.subpath,
+            project, subpath = episode_location(first)
+            checkin.append((project, subpath,
                             (first.start - half_window,
                              last.start + half_window)))
 

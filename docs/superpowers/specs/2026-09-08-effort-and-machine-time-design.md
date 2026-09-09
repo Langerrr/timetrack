@@ -175,7 +175,12 @@ paired interval cover the same moment, `PAIRED` takes it: the interval is
 bracketed by two heartbeats, while the episode window is an assumption drawn
 around one. `MANUAL` yields to both, being a typed claim rather than an observed
 event. The columns therefore sum to `EFFORT`, and `EFFORT` stays inside the
-wall clock.
+wall clock within each project. Projects are summed for portfolio and day
+views; simultaneous work on different projects is not unioned together.
+
+Detail allocation uses the lexicographically smallest normalized subpath among
+claimants of the winning category at each second. Normalization happens before
+display grouping, so detail shares sum to project effort.
 
 `--by day`, `--by project`, `--detail`, `--since` and `--until` behave as they do
 today.
@@ -232,3 +237,31 @@ check-in window.
 Detecting presence without an action. No harness exposes typing, scroll or
 composer focus, so time spent reading without replying is credited only through
 the mode in force and the heartbeats that bracket it.
+
+
+## Compacted accounting representation
+
+New effort history uses 20-column `coverage` rows: exact start/exclusive end
+in columns 3/4, category in 7, project/subpath in 8/9, duration in 16, and `-`
+in other fields. Canonical disjoint runs coalesce within project/local day;
+there are at most as many runs as integer seconds in the day. Merge historical
+coverage with new evidence before category priority and detail allocation,
+including overlapping histories from different machines and late manual adds.
+Duration-only legacy totals remain an opaque additive baseline; missing legacy
+coverage cannot be inferred.
+
+Machine history contains additive finalized durations. Open brackets keep
+their opening and identity in current state until matching closure or reset,
+without age-based expiry. Their capped estimates remain provisional and can
+reach back before a rollover when later evidence supplies the full duration.
+Coalesced closed-tool coverage and pending closed-turn intervals retain only
+what is still needed for own-tool subtraction; retain no raw hook history.
+The last heartbeat remains available for future paired half-gap credit, and a
+solo episode preserves its initial attribution. A recent Stop continuation
+seed can expire after `TT_MAX_ACTIVE_GAP` and is cleared by SessionStart reset.
+No source's reconstruction frontier suppresses another machine's observations.
+
+Tool identity includes the observed owning `agent_id`. Associate an observed
+child with the sole eligible active spawning bracket in its session. Missing
+or ambiguous association must not subtract its tools from an arbitrary worker.
+A spawning bracket remains measurable even without child tool telemetry.

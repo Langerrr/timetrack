@@ -31,8 +31,8 @@ class TestCompact(unittest.TestCase):
         rows = parse_stream([prompt(0), prompt(600)])
         history, carry = compact(rows, cutoff=86400, options=options())
         self.assertTrue(history)
-        self.assertTrue(all("\ttotal\t" in line for line in history))
-        self.assertEqual(carry, [])
+        self.assertTrue(all(line.split("\t")[1] in ("total", "coverage") for line in history))
+        self.assertEqual({r.event for r in parse_stream(carry)}, {"heartbeat", "turn"})
 
     def test_a_total_row_carries_its_seconds(self):
         rows = parse_stream([prompt(0), prompt(600)])
@@ -96,8 +96,10 @@ class TestCompactDisjointEffort(unittest.TestCase):
             prompt_row(1200), prompt_row(1500),
         ]
         history, _carry = compact(rows, cutoff=86400, options=options())
-        by_category = {l.split("\t")[6]: int(l.split("\t")[15])
-                       for l in history}
+        by_category = {}
+        for line in history:
+            fields = line.split("\t")
+            by_category[fields[6]] = by_category.get(fields[6], 0) + int(fields[15])
         # Ground truth, independent of compact(): PAIRED's raw union is
         # (1100, 1500) = 400s; CHECKIN's raw union is (-600, 1600) = 2200s,
         # clipped to (0, 1600) = 1600s by compact()'s own clip(0, cutoff).
@@ -121,7 +123,7 @@ class TestCompactDayEnd(unittest.TestCase):
         self.assertTrue(history)
         for line in history:
             fields = line.split("\t")
-            self.assertEqual(fields[3], "1000")
+            self.assertEqual(fields[3], "1000" if fields[1] == "total" else "600")
 
     def test_a_full_prior_day_ends_at_the_next_boundary(self):
         rows = parse_stream([prompt(0), prompt(600)])
@@ -131,7 +133,7 @@ class TestCompactDayEnd(unittest.TestCase):
         for line in history:
             fields = line.split("\t")
             self.assertEqual(fields[2], "0")
-            self.assertEqual(fields[3], "86400")
+            self.assertEqual(fields[3], "86400" if fields[1] == "total" else "600")
 
 
 class TestCompactMachineTime(unittest.TestCase):
@@ -145,8 +147,10 @@ class TestCompactMachineTime(unittest.TestCase):
             beat(100, "Stop", session="s2", subpath="backend"),
         ]
         history, _carry = compact(rows, cutoff=86400, options=options())
-        by_category = {l.split("\t")[6]: int(l.split("\t")[15])
-                       for l in history}
+        by_category = {}
+        for line in history:
+            fields = line.split("\t")
+            by_category[fields[6]] = by_category.get(fields[6], 0) + int(fields[15])
         self.assertEqual(by_category.get("tool", 0), 20)
         self.assertEqual(by_category.get("agent", 0), 80)
 

@@ -694,7 +694,7 @@ tt_validate_rows() { # file role
     # A total row is either the retired 12-field layout -- mode in column 7,
     # seconds in column 11 -- or the current 20-field layout -- category in
     # column 7, seconds in column 16. Both can coexist in the same file: the
-    # 87 rows a real log already holds are never rewritten.
+    # existing duration-only history passes through without inventing coverage.
     function valid_total_old() {
       return NF == 12 && uint($3) && uint($4) && $4 > $3 &&
              tracked_mode($7) && $8 != "" && $9 != "" &&
@@ -706,6 +706,11 @@ tt_validate_rows() { # file role
     }
     function valid_total() {
       return valid_total_old() || valid_total_new()
+    }
+    function valid_coverage() {
+      return NF == 20 && uint($3) && uint($4) && $4 > $3 &&
+             ($7 == "paired" || $7 == "checkin" || $7 == "manual") &&
+             $8 != "" && $9 != "" && uint($16) && $16 == $4 - $3
     }
     function valid_beat() {
       return NF >= 11 && uint($3) && uint($4) && $4 >= $3 &&
@@ -721,18 +726,20 @@ tt_validate_rows() { # file role
              $8 != "" && $9 != "" && $10 != ""
     }
     function tracked_state_event(value) {
-      return value == "heartbeat" || value == "turn" || value == "tool"
+      return value == "heartbeat" || value == "turn" || value == "tool" ||
+             value == "continuation" || value == "closed-turn" || value == "tool-coverage"
     }
     # Same split as total: the retired reading-estimate model at its own,
     # narrower width, or the current 20-field layout -- a carried
-    # heartbeat, turn or tool bracket, dated at its own instant ($3 == $4)
-    # with the cutoff that carried it in column 16.
+    # heartbeat, opening or continuation instant; closed-turn/tool-coverage
+    # state instead carries an interval. New state reserves column 16 as zero.
     function valid_state_old() {
       return NF >= 18 && NF != 20 && uint($3) && uint($4) && $4 >= $3 &&
              ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
     }
     function valid_state_new() {
-      return NF == 20 && uint($3) && uint($4) && $3 == $4 &&
+      return NF == 20 && uint($3) && uint($4) && $4 >= $3 &&
+             (($11 == "closed-turn" || $11 == "tool-coverage") || $3 == $4) &&
              tracked_state_event($11) && $8 != "" && $9 != "" && uint($16)
     }
     function valid_state() {
@@ -743,7 +750,8 @@ tt_validate_rows() { # file role
              ($7 == "paired" || $7 == "solo") && $8 != "" && $9 != ""
     }
     function valid_detail() {
-      return ($2 == "beat" && valid_beat()) ||
+      return ($2 == "coverage" && valid_coverage()) ||
+             ($2 == "beat" && valid_beat()) ||
              ($2 == "span" && valid_span()) ||
              ($2 == "mode" && valid_mode_event()) ||
              ($2 == "state" && valid_state()) ||
@@ -760,7 +768,7 @@ tt_validate_rows() { # file role
       bad = 1; next
     }
     role == "compact-output" {
-      if ($2 == "total" && valid_total()) next
+      if (($2 == "total" && valid_total()) || ($2 == "coverage" && valid_coverage())) next
       bad = 1; next
     }
     role == "state-output" {
@@ -792,17 +800,10 @@ tt_compact_cleanup() {
     "$compact_sorted" "$compact_history" "$compact_new" "$current_new"
 }
 
-# The caller holds the per-machine event lock. Reconstruct all detail before
-# cutoff into daily totals through the Python reconstruction, and carry
-# forward only what has not yet closed: today's beats and mode transitions,
-# and the still-open tail of a manual span that straddles the boundary
-# (ttreport.compact splits that tail out itself). A legacy or interrupted
-# deployment can leave raw detail sitting inside the compact file itself, so
-# that file's own beat/span/mode/state rows are swept in alongside
-# current-<machine>.tsv; only its total rows -- in either column layout --
-# pass through untouched, so years of history are never reprocessed just to
-# compact today. A stale compact marker is dropped rather than kept, since
-# the fresh marker below always replaces it.
+# The caller holds the per-machine event lock. Reconcile canonical effort
+# coverage with new observations and late manual additions. Opaque legacy and
+# finalized machine totals pass through untouched. Pending lifecycle facts live
+# in current state; their estimates must remain replaceable at later rollovers.
 tt_compact_locked() { # cutoff-epoch
   compact_cutoff=$1
   tt_ensure_gitignore || return 1
@@ -827,7 +828,7 @@ tt_compact_locked() { # cutoff-epoch
   fi
   if ! awk -F '\t' -v detail="$compact_detail" -v keep="$compact_keep" '
       $2 == "beat" || $2 == "span" || $2 == "mode" ||
-      $2 == "state" || $2 == "state-tool" || $2 == "state-agent" {
+      $2 == "state" || $2 == "state-tool" || $2 == "state-agent" || $2 == "coverage" {
         print > detail; next
       }
       $2 == "compact" { next }

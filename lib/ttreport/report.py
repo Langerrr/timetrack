@@ -1,14 +1,7 @@
-"""Aggregates spans into buckets and renders the table.
+"""Normalize effort within each project, then sum into display buckets.
 
-Effort unions inside a bucket, because one person cannot spend the same
-minute twice on one project. Machine time sums, because agents can.
-
-Effort's three columns arrive with overlapping coverage -- a check-in
-episode's window can cover seconds a paired interval also covers -- so
-before totalling, each category has whatever a higher-priority category
-already covers subtracted from it, in priority order PAIRED > CHECKIN >
-MANUAL. That makes the three columns disjoint, so they sum exactly to
-EFFORT, and EFFORT equals the union of every effort span in the bucket.
+Machine time and opaque legacy durations remain additive. New effort history
+retains timestamp coverage and joins live effort before normalization.
 """
 
 import time
@@ -16,10 +9,10 @@ from typing import Dict, Iterable, List, NamedTuple
 
 from .effort import effort_spans
 from .events import Row
-from .intervals import Span, clip, split_days, subtract, total, union
+from .intervals import Span, clip, split_days, total
 from .machine import machine_spans
 from .modes import ModeTimeline
-from .state import floor_entries, floor_of
+from .coverage import with_history
 
 COLUMNS = ("PAIRED", "CHECKIN", "MANUAL", "EFFORT", "AGENT", "TOOL")
 EFFORT_PRIORITY = ("PAIRED", "CHECKIN", "MANUAL")
@@ -74,20 +67,6 @@ def _collect(entries, options):
     return out
 
 
-def _disjoint_effort(collected, key):
-    # type: (Dict[str, Dict[str, List[Span]]], str) -> Dict[str, List[Span]]
-    """Priority order PAIRED > CHECKIN > MANUAL: each category keeps only
-    the seconds no higher-priority category already claimed."""
-    claimed = []  # type: List[Span]
-    disjoint = {}  # type: Dict[str, List[Span]]
-    for name in EFFORT_PRIORITY:
-        spans = union(collected[name].get(key, []))
-        remaining = subtract(spans, claimed)
-        disjoint[name] = remaining
-        claimed = union(claimed + remaining)
-    return disjoint
-
-
 def _total_key(row, options):
     # type: (Row, Options) -> str
     if options.byday:
@@ -127,19 +106,9 @@ def build_report(rows, options):
                           options.checkin_window)
     machine = machine_spans(rows, options.max_active)
 
-    # A carried heartbeat, turn or tool bracket is dated at its own real,
-    # pre-cutoff timestamp so it classifies correctly against what follows
-    # it -- but its pre-cutoff portion is already inside a history `total`
-    # row, so whatever it contributes here is floored at the cutoff that
-    # carried it.
-    floor = floor_of(rows)
-    sources = {
-        "PAIRED": floor_entries(effort.paired, floor),
-        "CHECKIN": floor_entries(effort.checkin, floor),
-        "MANUAL": effort.manual,
-        "AGENT": floor_entries(machine.agent, floor),
-        "TOOL": floor_entries(machine.tool, floor),
-    }
+    normalized = with_history(effort, rows)
+    sources = {name.upper(): entries for name, entries in normalized.items()}
+    sources.update(AGENT=machine.agent, TOOL=machine.tool)
     collected = {name: _collect(entries, options)
                  for name, entries in sources.items()}
     totals = _collect_totals(rows, options)
@@ -151,10 +120,9 @@ def build_report(rows, options):
 
     table = {}  # type: Dict[str, Dict[str, int]]
     for key in keys:
-        disjoint = _disjoint_effort(collected, key)
         cells = {}
         for name in EFFORT_PRIORITY:
-            cells[name] = total(disjoint[name])
+            cells[name] = total(collected[name].get(key, []))
         for name in ("AGENT", "TOOL"):
             cells[name] = total(collected[name].get(key, []))
         extra = totals.get(key, {})
