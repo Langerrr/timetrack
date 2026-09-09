@@ -1,5 +1,7 @@
 # Split the tt script
 
+> **Status: completed.** Tasks 1–2, including the standalone-loader correction are implemented and reviewed. See the [completion record](../reports/2026-09-08-completion.md) for commits, verification, decisions, and the subsequent authorized cleanup. The steps and code snippets below are the historical implementation recipe; unchecked recipe boxes do not indicate remaining work.
+
 > **For agentic workers:** this is a code move, not a redesign. The invariant below is the whole acceptance criterion.
 
 **Goal:** Give the hook its own entry point, so a hook fire loads the code it needs instead of the whole CLI.
